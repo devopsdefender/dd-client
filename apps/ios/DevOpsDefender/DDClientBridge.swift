@@ -146,6 +146,16 @@ enum AppDefaults {
     }
 
     private static var hostNoiseKeyPath: String {
+        let environment = ProcessInfo.processInfo.environment
+        if let simulatorHostHome = environment["SIMULATOR_HOST_HOME"],
+           simulatorHostHome.hasPrefix("/Users/") {
+            return simulatorHostHome + "/.config/devopsdefender/noise.key"
+        }
+        if let hostHome = environment["HOME"],
+           hostHome.hasPrefix("/Users/"),
+           !hostHome.contains("/CoreSimulator/Devices/") {
+            return hostHome + "/.config/devopsdefender/noise.key"
+        }
         let userName = NSUserName()
         if userName.isEmpty {
             return appSupportNoiseKeyPath
