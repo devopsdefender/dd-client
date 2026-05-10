@@ -1,6 +1,7 @@
 mod ita;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use base64::Engine as _;
@@ -19,6 +20,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_NOISE_MSG: usize = 65535;
 const ATTACH_CHUNK: usize = 4096;
+const ATTACH_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
 const CTRL_D: u8 = 0x04;
 const CTRL_RIGHT_BRACKET: u8 = 0x1d;
 
@@ -207,9 +209,13 @@ pub async fn attach_session(
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut in_buf = [0u8; ATTACH_CHUNK];
+    let mut keepalive = attach_keepalive();
 
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                conn.sink.send(WsMessage::Ping(Vec::new().into())).await?;
+            }
             n = stdin.read(&mut in_buf) => {
                 let n = n?;
                 if n == 0 {
@@ -264,9 +270,13 @@ where
         anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
     }
     on_open()?;
+    let mut keepalive = attach_keepalive();
 
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                conn.sink.send(WsMessage::Ping(Vec::new().into())).await?;
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
@@ -284,6 +294,15 @@ where
     }
 
     Ok(())
+}
+
+fn attach_keepalive() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + ATTACH_KEEPALIVE_INTERVAL,
+        ATTACH_KEEPALIVE_INTERVAL,
+    );
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
 }
 
 #[derive(Debug, Eq, PartialEq)]
