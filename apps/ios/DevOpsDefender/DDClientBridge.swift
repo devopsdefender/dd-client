@@ -205,6 +205,37 @@ final class ClientViewModel: ObservableObject {
         )
     }
 
+    func usePreviewDefaults() {
+        agentURL = AppDefaults.previewAgentURL
+        keyPath = AppDefaults.defaultKeyPath
+        insecureSkipQuoteVerify = true
+        itaAPIKey = ""
+        itaBaseURL = AppDefaults.itaBaseURL
+        itaJwksURL = AppDefaults.itaJwksURL
+        itaIssuer = AppDefaults.itaIssuer
+        status = "Using PR preview defaults"
+    }
+
+    func usePreviewDefaultsAndLoad() {
+        usePreviewDefaults()
+        let settings = settings
+        run("Checking setup") {
+            let recipesResponse = try DDClientBridge.listRecipes(settings: settings)
+            let sessionsResponse = try DDClientBridge.listSessions(settings: settings)
+            let recipes = extractRecipes(from: recipesResponse["value"])
+            let sessions = extractSessions(from: sessionsResponse["value"])
+            return ClientUpdate(
+                status: "Ready: \(recipes.count) recipes, \(sessions.count) sessions",
+                recipes: recipes,
+                sessions: sessions,
+                rawResponse: prettyJSONString([
+                    "recipes": recipesResponse,
+                    "sessions": sessionsResponse
+                ])
+            )
+        }
+    }
+
     func useAppSupportKeyPath() {
         keyPath = AppDefaults.appSupportNoiseKeyPath
     }

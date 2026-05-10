@@ -14,15 +14,24 @@ The app defaults to that URL and, on simulator or "Designed for iPad on Mac",
 tries `~/.config/devopsdefender/noise.key`. On sandboxed installs, use the
 "Use app support key path" button and paste/import the Noise key content.
 
+To copy the local key as hex for paste/import:
+
+```bash
+xxd -p -c 256 "$HOME/.config/devopsdefender/noise.key" | pbcopy
+```
+
 ## App Workflow
 
-- Toggle "Dev/test: skip TDX quote verification" for PR previews. This maps to
-  the CLI `--insecure-skip-quote-verify` path.
-- Tap "Load recipes" to call Rust for the recipe list.
-- Tap "List sessions" to call Rust for current sessions.
+- The first card is "Quick setup". Tap "Use defaults & load" for PR preview
+  testing; it restores the PR #261 URL, uses the default Noise key path, skips
+  quote verification, and loads recipes plus sessions.
+- If the key is not found, copy the 32-byte Noise key as hex/base64, then use
+  the app's paste/import control. "Use app key path" switches to app storage for
+  sandboxed installs.
 - Tap "Create shell session" to create a session with recipe `shell`.
 - Select a session, then use "Replay transcript" or "Attach / refresh output".
-- Use the zoom stepper for larger transcript text when reading output on mobile.
+- Use "Reader" and the zoom stepper for larger transcript text when reading
+  output on mobile.
 - Use quick write controls for common agent prompts: `1`, `2`, `Enter`, or a
   short custom line. Attach/write/detach does not close the remote session.
 - Enable session notifications to get a local notification when a newly listed

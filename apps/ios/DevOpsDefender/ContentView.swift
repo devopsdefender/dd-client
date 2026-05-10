@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @StateObject private var viewModel = ClientViewModel()
@@ -18,6 +19,7 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header
+                        setupPanel
                         statusStrip
                         actionPanel
                         transcriptPanel
@@ -40,6 +42,58 @@ struct ContentView: View {
                     transcript: viewModel.transcript,
                     fontSize: $viewModel.transcriptFontSize
                 )
+            }
+        }
+    }
+
+    private var setupPanel: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Quick setup", subtitle: "Use defaults, confirm the key, start reading")
+
+                VStack(spacing: 8) {
+                    SetupChecklistRow(
+                        title: "Agent",
+                        detail: agentHost,
+                        state: .ready
+                    )
+                    SetupChecklistRow(
+                        title: "Noise key",
+                        detail: keyFileExists ? "Found at \(expandedKeyPath)" : "Not found. Paste the key or switch to app storage.",
+                        state: keyFileExists ? .ready : .needsAction
+                    )
+                    SetupChecklistRow(
+                        title: "Verification",
+                        detail: viewModel.insecureSkipQuoteVerify ? "TDX quote checks skipped for PR preview testing" : "Intel Trust Authority required",
+                        state: viewModel.insecureSkipQuoteVerify ? .preview : .ready
+                    )
+                }
+
+                LazyVGrid(columns: actionColumns, spacing: 10) {
+                    ActionButton("Load defaults", systemImage: "play.circle") {
+                        viewModel.usePreviewDefaultsAndLoad()
+                    }
+                    .disabled(viewModel.isBusy)
+
+                    ActionButton("Paste key", systemImage: "doc.on.clipboard") {
+                        guard let key = UIPasteboard.general.string else {
+                            viewModel.status = "Clipboard did not contain text"
+                            return
+                        }
+                        viewModel.keyContent = key
+                        viewModel.importPastedKey()
+                    }
+                    .disabled(viewModel.isBusy)
+
+                    ActionButton("App key", systemImage: "folder") {
+                        viewModel.useAppSupportKeyPath()
+                        isConnectionExpanded = true
+                    }
+
+                    ActionButton("Advanced", systemImage: "slider.horizontal.3") {
+                        isConnectionExpanded.toggle()
+                    }
+                }
             }
         }
     }
@@ -343,7 +397,7 @@ struct ContentView: View {
                 }
                 .padding(.top, 12)
             } label: {
-                SectionHeader(title: "Connection", subtitle: viewModel.keyPath)
+                SectionHeader(title: "Advanced connection", subtitle: viewModel.keyPath)
             }
         }
     }
@@ -384,6 +438,14 @@ struct ContentView: View {
     private var transcriptText: String {
         viewModel.transcript.isEmpty ? "No transcript loaded" : viewModel.transcript
     }
+
+    private var expandedKeyPath: String {
+        (viewModel.keyPath as NSString).expandingTildeInPath
+    }
+
+    private var keyFileExists: Bool {
+        FileManager.default.fileExists(atPath: expandedKeyPath)
+    }
 }
 
 private enum Palette {
@@ -399,6 +461,7 @@ private enum Palette {
     static let accentText = Color(red: 0.99, green: 0.97, blue: 0.91)
     static let ready = Color(red: 0.20, green: 0.48, blue: 0.31)
     static let busy = Color(red: 0.70, green: 0.43, blue: 0.12)
+    static let warn = Color(red: 0.72, green: 0.49, blue: 0.16)
     static let terminal = Color(red: 0.13, green: 0.12, blue: 0.10)
     static let terminalText = Color(red: 0.94, green: 0.91, blue: 0.82)
 }
@@ -463,6 +526,52 @@ private struct ActionButton: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private enum SetupState {
+    case ready
+    case preview
+    case needsAction
+
+    var color: Color {
+        switch self {
+        case .ready:
+            Palette.ready
+        case .preview:
+            Palette.warn
+        case .needsAction:
+            Palette.busy
+        }
+    }
+}
+
+private struct SetupChecklistRow: View {
+    let title: String
+    let detail: String
+    let state: SetupState
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Circle()
+                .fill(state.color)
+                .frame(width: 8, height: 8)
+
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Palette.text)
+                .frame(width: 92, alignment: .leading)
+
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(Palette.muted)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Palette.input)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
