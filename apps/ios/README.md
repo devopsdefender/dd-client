@@ -39,3 +39,17 @@ xcodegen generate
 open DevOpsDefender.xcodeproj
 ```
 
+Run the iOS app on Apple Silicon macOS through iOS compatibility mode:
+
+```bash
+cd apps/ios
+chmod +x run-designed-for-ipad-on-mac.sh
+./run-designed-for-ipad-on-mac.sh
+```
+
+If destination discovery fails, pass the `My Mac (Designed for iPad)` id from
+`xcodebuild -project DevOpsDefender.xcodeproj -scheme DevOpsDefender -showdestinations`:
+
+```bash
+DD_IOS_MAC_DEVICE_ID=00008122-000121C20AF1001C ./run-designed-for-ipad-on-mac.sh
+```
