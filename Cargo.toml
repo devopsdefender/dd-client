@@ -2,6 +2,7 @@
 members = [
     "crates/dd-client-core",
     "crates/dd-client-cli",
+    "crates/dd-client-ffi",
 ]
 resolver = "2"
 
@@ -9,4 +10,3 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/devopsdefender/dd-client"
-

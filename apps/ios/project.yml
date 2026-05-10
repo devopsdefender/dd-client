@@ -1,0 +1,23 @@
+name: DevOpsDefender
+options:
+  bundleIdPrefix: com.devopsdefender
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+targets:
+  DevOpsDefender:
+    type: application
+    platform: iOS
+    sources:
+      - DevOpsDefender
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.devopsdefender.client
+        PRODUCT_NAME: DevOpsDefender
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        SUPPORTS_MACCATALYST: NO
+        INFOPLIST_FILE: DevOpsDefender/Info.plist
+

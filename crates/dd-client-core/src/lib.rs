@@ -18,6 +18,8 @@ use x25519_dalek::{PublicKey, StaticSecret};
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_NOISE_MSG: usize = 65535;
 const ATTACH_CHUNK: usize = 4096;
+const CTRL_D: u8 = 0x04;
+const CTRL_RIGHT_BRACKET: u8 = 0x1d;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = futures_util::stream::SplitSink<WsStream, WsMessage>;
@@ -193,6 +195,8 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
         anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
     }
 
+    eprintln!("attached; Ctrl-] detaches, Ctrl-D sends EOF and disconnects");
+
     let _raw = RawMode::enter()?;
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -205,7 +209,16 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
                 if n == 0 {
                     break;
                 }
-                send_encrypted(&mut conn.transport, &mut conn.sink, &in_buf[..n]).await?;
+                match attach_input_action(&in_buf[..n]) {
+                    AttachInputAction::Forward => {
+                        send_encrypted(&mut conn.transport, &mut conn.sink, &in_buf[..n]).await?;
+                    }
+                    AttachInputAction::ForwardThenDisconnect => {
+                        send_encrypted(&mut conn.transport, &mut conn.sink, &in_buf[..n]).await?;
+                        break;
+                    }
+                    AttachInputAction::Disconnect => break,
+                }
             }
             frame = next_binary(&mut conn.stream) => {
                 let Some(cipher) = frame? else {
@@ -219,6 +232,21 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum AttachInputAction {
+    Forward,
+    ForwardThenDisconnect,
+    Disconnect,
+}
+
+fn attach_input_action(bytes: &[u8]) -> AttachInputAction {
+    match bytes {
+        [CTRL_D] => AttachInputAction::ForwardThenDisconnect,
+        [CTRL_RIGHT_BRACKET] => AttachInputAction::Disconnect,
+        _ => AttachInputAction::Forward,
+    }
 }
 
 pub fn session_id(value: &Value) -> anyhow::Result<String> {
@@ -525,5 +553,26 @@ mod tests {
         let pubkey = [9u8; 32];
         let encoded = base64::engine::general_purpose::STANDARD.encode(report);
         verify_report_data(&encoded, &pubkey).unwrap();
+    }
+
+    #[test]
+    fn attach_input_detaches_on_ctrl_right_bracket() {
+        assert_eq!(
+            attach_input_action(&[CTRL_RIGHT_BRACKET]),
+            AttachInputAction::Disconnect
+        );
+    }
+
+    #[test]
+    fn attach_input_sends_eof_then_disconnects_on_ctrl_d() {
+        assert_eq!(
+            attach_input_action(&[CTRL_D]),
+            AttachInputAction::ForwardThenDisconnect
+        );
+    }
+
+    #[test]
+    fn attach_input_forwards_regular_bytes() {
+        assert_eq!(attach_input_action(b"exit\n"), AttachInputAction::Forward);
     }
 }
