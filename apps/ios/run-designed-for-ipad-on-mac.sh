@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 PROJECT="DevOpsDefender.xcodeproj"
 SCHEME="DevOpsDefender"
-BUNDLE_ID="com.devopsdefender.client"
+BUNDLE_ID="${DD_BUNDLE_ID:-}"
 MAC_DESTINATION_ID="${DD_IOS_MAC_DEVICE_ID:-}"
 COREDEVICE_ID="${DD_COREDEVICE_ID:-}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
@@ -21,13 +21,12 @@ if ! command -v xcrun >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d "$PROJECT" ]; then
-  if ! command -v xcodegen >/dev/null 2>&1; then
-    echo "error: $PROJECT is missing and xcodegen is not installed." >&2
-    echo "install: brew install xcodegen" >&2
-    exit 1
-  fi
+if command -v xcodegen >/dev/null 2>&1; then
   xcodegen generate
+elif [ ! -d "$PROJECT" ]; then
+  echo "error: $PROJECT is missing and xcodegen is not installed." >&2
+  echo "install: brew install xcodegen" >&2
+  exit 1
 fi
 
 if [ -z "$MAC_DESTINATION_ID" ]; then
@@ -65,12 +64,24 @@ if [ -z "$DEVELOPMENT_TEAM" ]; then
   exit 1
 fi
 
+if [ -z "$BUNDLE_ID" ]; then
+  BUNDLE_ID="dev.devopsdefender.client.team$DEVELOPMENT_TEAM"
+fi
+
+mkdir -p Config
+cat > Config/Signing.local.xcconfig <<EOF
+DEVELOPMENT_TEAM = $DEVELOPMENT_TEAM
+DD_PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID
+EOF
+
 xcodebuild \
+  -allowProvisioningUpdates \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
   -destination "platform=macOS,id=$MAC_DESTINATION_ID" \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+  DD_PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
   build
 
 DERIVED_DATA_DIR="$(
@@ -78,6 +89,8 @@ DERIVED_DATA_DIR="$(
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration "$CONFIGURATION" \
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+    DD_PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
     -showBuildSettings \
     -json \
     | plutil -extract 0.buildSettings.BUILT_PRODUCTS_DIR raw -o - -
@@ -106,11 +119,16 @@ not listed by CoreDevice/devicectl. To run it on this Mac, open:
 
 Then select "My Mac (Designed for iPad)" and press Run.
 
+The script also wrote Config/Signing.local.xcconfig so Xcode uses:
+
+  DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM
+  DD_PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID
+
 For a physical iPhone or iPad, pass a CoreDevice id from:
 
   xcrun devicectl list devices
 
 Example:
 
-  DD_DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM DD_COREDEVICE_ID=<device-id> $0
+  DD_DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM DD_BUNDLE_ID=$BUNDLE_ID DD_COREDEVICE_ID=<device-id> $0
 EOF

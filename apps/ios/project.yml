@@ -3,22 +3,23 @@ options:
   bundleIdPrefix: com.devopsdefender
   deploymentTarget:
     iOS: "17.0"
-settings:
-  base:
-    DEVELOPMENT_TEAM: ""
 targets:
   DevOpsDefender:
     type: application
     platform: iOS
     sources:
       - DevOpsDefender
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     preBuildScripts:
       - name: Build Rust FFI
         script: Scripts/build-rust.sh
         basedOnDependencyAnalysis: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.devopsdefender.client
+        DD_PRODUCT_BUNDLE_IDENTIFIER: dev.devopsdefender.client.team$(DEVELOPMENT_TEAM)
+        PRODUCT_BUNDLE_IDENTIFIER: "$(DD_PRODUCT_BUNDLE_IDENTIFIER)"
         PRODUCT_NAME: DevOpsDefender
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES

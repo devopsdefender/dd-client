@@ -99,6 +99,18 @@ cd apps/ios
 DD_DEVELOPMENT_TEAM=<apple-team-id> ./run-designed-for-ipad-on-mac.sh
 ```
 
+The script defaults the bundle identifier to
+`dev.devopsdefender.client.team<apple-team-id>` and passes
+`-allowProvisioningUpdates` so Xcode can create a local development profile.
+If Apple reports that a bundle identifier is unavailable, choose another unique
+one:
+
+```bash
+DD_DEVELOPMENT_TEAM=<apple-team-id> \
+DD_BUNDLE_ID=com.<your-name>.devopsdefender.client \
+./run-designed-for-ipad-on-mac.sh
+```
+
 `xcodebuild` can build the local Mac compatibility destination, but
 `devicectl` does not list that destination. After the script builds the signed
 app, open `DevOpsDefender.xcodeproj`, select "My Mac (Designed for iPad)", and
