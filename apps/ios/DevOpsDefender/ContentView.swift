@@ -7,17 +7,18 @@ struct ContentView: View {
         ZStack(alignment: .topLeading) {
             Palette.background.ignoresSafeArea()
 
-            ScrollView(.vertical) {
+            ScrollView([.horizontal, .vertical]) {
                 Text(transcriptText)
                     .font(.system(size: 15, design: .monospaced))
                     .foregroundStyle(Palette.text)
                     .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .frame(alignment: .topLeading)
                     .padding(.horizontal, 16)
                     .padding(.top, 46)
                     .padding(.bottom, 24)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             HStack(spacing: 8) {
                 Circle()
