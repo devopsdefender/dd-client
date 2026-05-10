@@ -1,0 +1,35 @@
+name: iOS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  simulator-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Build iOS simulator app
+        working-directory: apps/ios
+        run: |
+          xcodebuild \
+            -project DevOpsDefender.xcodeproj \
+            -scheme DevOpsDefender \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            DD_PRODUCT_BUNDLE_IDENTIFIER=com.devopsdefender.client.ci \
+            CODE_SIGNING_ALLOWED=NO \
+            build

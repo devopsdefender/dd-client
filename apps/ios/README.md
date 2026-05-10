@@ -78,3 +78,22 @@ The Xcode project is generated from `project.yml`. Keep
 `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES` and
 `SUPPORTS_MACCATALYST = NO`; this target is iOS compatibility mode, not
 Catalyst.
+
+## CI And TestFlight
+
+Pull requests run `.github/workflows/ios.yml`, which generates the project and
+builds the iOS simulator app without code signing.
+
+TestFlight uploads are manual from `.github/workflows/testflight.yml`. Configure
+the `testflight` GitHub environment with:
+
+```bash
+gh secret set APPLE_TEAM_ID --env testflight
+gh secret set APP_STORE_CONNECT_API_KEY_ID --env testflight
+gh secret set APP_STORE_CONNECT_API_ISSUER_ID --env testflight
+gh secret set APP_STORE_CONNECT_API_PRIVATE_KEY --env testflight < AuthKey_XXXX.p8
+```
+
+Then run the `TestFlight` workflow and set the App Store Connect bundle id. The
+workflow uses the GitHub run number as `CFBundleVersion` and uploads as an
+internal-only TestFlight build by default.

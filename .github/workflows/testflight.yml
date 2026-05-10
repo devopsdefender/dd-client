@@ -1,0 +1,57 @@
+name: TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: App Store Connect bundle identifier
+        required: true
+        default: com.posix4e.devopsdefender.client
+      marketing_version:
+        description: CFBundleShortVersionString
+        required: true
+        default: "0.1"
+      internal_only:
+        description: Restrict uploaded build to internal TestFlight testing
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  upload:
+    runs-on: macos-latest
+    environment: testflight
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          test -n "$ASC_KEY_ID"
+          test -n "$ASC_PRIVATE_KEY"
+          mkdir -p "$RUNNER_TEMP/appstoreconnect"
+          KEY_PATH="$RUNNER_TEMP/appstoreconnect/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" | perl -pe 's/\\n/\n/g' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive and upload to TestFlight
+        env:
+          DD_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          DD_BUNDLE_ID: ${{ inputs.bundle_id }}
+          DD_MARKETING_VERSION: ${{ inputs.marketing_version }}
+          DD_BUILD_NUMBER: ${{ github.run_number }}
+          DD_TESTFLIGHT_INTERNAL_ONLY: ${{ inputs.internal_only }}
+          APP_STORE_CONNECT_API_KEY_PATH: ${{ env.ASC_KEY_PATH }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: apps/ios/Scripts/archive-testflight.sh

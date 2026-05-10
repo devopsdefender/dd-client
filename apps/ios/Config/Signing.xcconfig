@@ -1,3 +1,5 @@
 DD_PRODUCT_BUNDLE_IDENTIFIER = dev.devopsdefender.client.team$(DEVELOPMENT_TEAM)
+DD_MARKETING_VERSION = 0.1
+DD_BUILD_NUMBER = 1
 
 #include? "Signing.local.xcconfig"
