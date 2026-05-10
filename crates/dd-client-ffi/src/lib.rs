@@ -1,6 +1,9 @@
 use std::ffi::{CStr, CString};
+use std::future::Future;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::thread;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -15,6 +18,8 @@ const DEFAULT_ITA_ISSUER: &str = "https://portal.trustauthority.intel.com";
 const DEFAULT_ATTACH_MAX_BYTES: usize = 128 * 1024;
 const MAX_ATTACH_BYTES: usize = 1024 * 1024;
 const DEFAULT_ATTACH_IDLE_TIMEOUT_MS: u64 = 1200;
+const DEFAULT_REPLAY_MAX_BYTES: usize = 48 * 1024;
+const MAX_REPLAY_BYTES: usize = 48 * 1024;
 
 #[no_mangle]
 pub extern "C" fn dd_client_keygen(
@@ -67,13 +72,11 @@ fn keygen(
     let cp_url = optional_c_string(cp_url)?;
     let label = optional_c_string(label)?;
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let pubkey_hex = runtime
-        .block_on(dd_client_core::public_key_hex(Path::new(&key_path)))
-        .map_err(|e| e.to_string())?;
+    let key_path = PathBuf::from(key_path);
+    let pubkey_hex =
+        block_on_ffi_result(
+            move || async move { dd_client_core::public_key_hex(&key_path).await },
+        )?;
     let enrollment_url = match (cp_url.as_deref(), label.as_deref()) {
         (Some(cp_url), Some(label)) => {
             Some(dd_client_core::enrollment_url(cp_url, &pubkey_hex, label))
@@ -108,24 +111,18 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
         "import_key" => import_key_request(&request),
         "recipes" | "list_recipes" => {
             let opts = connection_options_from_request(&request)?;
-            let runtime = runtime()?;
-            let value = runtime
-                .block_on(async {
-                    let mut conn = connect(&opts).await?;
-                    list_recipes(&mut conn).await
-                })
-                .map_err(|e| e.to_string())?;
+            let value = block_on_ffi_result(move || async move {
+                let mut conn = connect(&opts).await?;
+                list_recipes(&mut conn).await
+            })?;
             Ok(ok_value("recipes", value))
         }
         "sessions" | "list_sessions" => {
             let opts = connection_options_from_request(&request)?;
-            let runtime = runtime()?;
-            let value = runtime
-                .block_on(async {
-                    let mut conn = connect(&opts).await?;
-                    list_sessions(&mut conn).await
-                })
-                .map_err(|e| e.to_string())?;
+            let value = block_on_ffi_result(move || async move {
+                let mut conn = connect(&opts).await?;
+                list_sessions(&mut conn).await
+            })?;
             Ok(ok_value("sessions", value))
         }
         "create_session" => {
@@ -135,13 +132,10 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
                 name: optional_json_string(&request, "name")?,
                 command: optional_json_string(&request, "command")?,
             };
-            let runtime = runtime()?;
-            let value = runtime
-                .block_on(async {
-                    let mut conn = connect(&opts).await?;
-                    create_session(&mut conn, &create_request).await
-                })
-                .map_err(|e| e.to_string())?;
+            let value = block_on_ffi_result(move || async move {
+                let mut conn = connect(&opts).await?;
+                create_session(&mut conn, &create_request).await
+            })?;
             let mut response = ok_map("create_session");
             if let Ok(id) = session_id(&value) {
                 response.insert("session_id".to_string(), serde_json::Value::String(id));
@@ -152,13 +146,13 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
         "replay_session" => {
             let opts = connection_options_from_request(&request)?;
             let id = required_json_string(&request, "id")?;
-            let runtime = runtime()?;
-            let value = runtime
-                .block_on(async {
-                    let mut conn = connect(&opts).await?;
-                    replay_session(&mut conn, &id).await
-                })
-                .map_err(|e| e.to_string())?;
+            let max_bytes = usize_json_field(&request, "max_bytes")?
+                .unwrap_or(DEFAULT_REPLAY_MAX_BYTES)
+                .min(MAX_REPLAY_BYTES);
+            let value = block_on_ffi_result(move || async move {
+                let mut conn = connect(&opts).await?;
+                replay_session(&mut conn, &id, Some(max_bytes)).await
+            })?;
             Ok(ok_value("replay_session", value))
         }
         "attach_exchange" | "attach_snapshot" => {
@@ -171,20 +165,17 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
             let idle_timeout_ms = u64_json_field(&request, "idle_timeout_ms")?
                 .unwrap_or(DEFAULT_ATTACH_IDLE_TIMEOUT_MS)
                 .clamp(100, 10_000);
-            let runtime = runtime()?;
-            let bytes = runtime
-                .block_on(async {
-                    let conn = connect(&opts).await?;
-                    attach_session_exchange(
-                        conn,
-                        &id,
-                        input.as_bytes(),
-                        max_bytes,
-                        Duration::from_millis(idle_timeout_ms),
-                    )
-                    .await
-                })
-                .map_err(|e| e.to_string())?;
+            let bytes = block_on_ffi_result(move || async move {
+                let conn = connect(&opts).await?;
+                attach_session_exchange(
+                    conn,
+                    &id,
+                    input.as_bytes(),
+                    max_bytes,
+                    Duration::from_millis(idle_timeout_ms),
+                )
+                .await
+            })?;
             let mut response = ok_map("attach_exchange");
             response.insert(
                 "text".to_string(),
@@ -294,11 +285,46 @@ fn usize_json_field(request: &serde_json::Value, name: &str) -> Result<Option<us
     Ok(u64_json_field(request, name)?.map(|value| value as usize))
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())
+fn block_on_ffi<M, F, T>(make_future: M) -> Result<T, String>
+where
+    M: FnOnce() -> F + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let runtime = runtime()?;
+    let worker = thread::Builder::new()
+        .name("dd-client-ffi".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || runtime.block_on(make_future()))
+        .map_err(|e| format!("spawn async worker: {e}"))?;
+
+    worker
+        .join()
+        .map_err(|_| "dd-client async worker panicked".to_string())
+}
+
+fn block_on_ffi_result<M, F, T, E>(make_future: M) -> Result<T, String>
+where
+    M: FnOnce() -> F + Send + 'static,
+    F: Future<Output = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: ToString + Send + 'static,
+{
+    block_on_ffi(make_future)?.map_err(|e| e.to_string())
+}
+
+fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| e.to_owned())
 }
 
 fn ok_value(operation: &str, value: serde_json::Value) -> serde_json::Value {

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use clap::{Args, Parser, Subcommand};
@@ -24,6 +24,7 @@ struct Cli {
 enum Command {
     Keygen(KeygenArgs),
     Pubkey(KeyOnlyArgs),
+    MobileLink(MobileLinkArgs),
     Recipes(ConnectArgs),
     Sessions(ConnectArgs),
     Create(CreateArgs),
@@ -49,6 +50,18 @@ struct KeygenArgs {
     cp_url: Option<String>,
     #[arg(long)]
     label: Option<String>,
+}
+
+#[derive(Args)]
+struct MobileLinkArgs {
+    #[arg(long)]
+    url: String,
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    include_key: bool,
 }
 
 #[derive(Args, Clone)]
@@ -87,6 +100,8 @@ struct SessionArgs {
     connect: ConnectArgs,
     #[arg(long)]
     id: String,
+    #[arg(long)]
+    max_bytes: Option<usize>,
 }
 
 #[derive(Args)]
@@ -129,6 +144,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Pubkey(args) => {
             println!("{}", public_key_hex(&args.key).await?);
         }
+        Command::MobileLink(args) => {
+            print_mobile_link(args).await?;
+        }
         Command::Recipes(args) => {
             let mut conn = connect(&connection_options(args)?).await?;
             print_json(list_recipes(&mut conn).await?)?;
@@ -143,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Replay(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(replay_session(&mut conn, &args.id).await?)?;
+            print_json(replay_session(&mut conn, &args.id, args.max_bytes).await?)?;
         }
         Command::Resize(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
@@ -178,6 +196,88 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn print_mobile_link(args: MobileLinkArgs) -> anyhow::Result<()> {
+    let key_hex = if args.include_key {
+        let key = args
+            .key
+            .as_deref()
+            .ok_or_else(|| anyhow!("--key is required with --include-key"))?;
+        Some(load_key_hex(key).await?)
+    } else {
+        None
+    };
+    let link = mobile_session_url(&args.url, &args.id, key_hex.as_deref());
+    println!("{link}");
+
+    if let Some(key) = args.key {
+        println!();
+        println!("pubkey: {}", public_key_hex(&key).await?);
+        println!(
+            "key import: xxd -p -c 256 {} | pbcopy",
+            shell_quote_path(&key)
+        );
+    }
+
+    println!();
+    if args.include_key {
+        println!();
+        println!("warning: this link contains the Noise private key; treat the QR as secret");
+    }
+
+    println!();
+    println!("Open this link on iPhone, or make a QR with:");
+    println!("qrencode -t ansiutf8 '{}'", shell_escape_single(&link));
+    Ok(())
+}
+
+fn mobile_session_url(agent_url: &str, session_id: &str, key_hex: Option<&str>) -> String {
+    let mut url = format!(
+        "devopsdefender://session?agent={}&id={}&skip_quote_verify=1",
+        percent_encode(agent_url),
+        percent_encode(session_id)
+    );
+    if let Some(key_hex) = key_hex {
+        url.push_str("&key=");
+        url.push_str(&percent_encode(key_hex));
+    }
+    url
+}
+
+async fn load_key_hex(path: &Path) -> anyhow::Result<String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("read {}", path.display()))?;
+    if bytes.len() != 32 {
+        anyhow::bail!("{} is {} bytes, expected 32", path.display(), bytes.len());
+    }
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn shell_quote_path(path: &std::path::Path) -> String {
+    shell_quote(&path.to_string_lossy())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", shell_escape_single(value))
+}
+
+fn shell_escape_single(value: &str) -> String {
+    value.replace('\'', "'\\''")
 }
 
 fn create_request(args: &CreateArgs) -> CreateSessionRequest {

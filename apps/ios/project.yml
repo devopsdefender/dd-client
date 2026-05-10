@@ -18,7 +18,6 @@ targets:
         basedOnDependencyAnalysis: false
     settings:
       base:
-        DD_PRODUCT_BUNDLE_IDENTIFIER: dev.devopsdefender.client.team$(DEVELOPMENT_TEAM)
         PRODUCT_BUNDLE_IDENTIFIER: "$(DD_PRODUCT_BUNDLE_IDENTIFIER)"
         PRODUCT_NAME: DevOpsDefender
         TARGETED_DEVICE_FAMILY: "1,2"

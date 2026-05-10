@@ -1,20 +1,55 @@
 # iOS Client
 
-Native SwiftUI client backed by `dd-client-core` through `dd-client-ffi`.
-Swift owns the UI and lifecycle; Rust owns direct Noise transport, quote
-verification, recipes, sessions, replay, and attach/write/detach primitives.
+Native SwiftUI companion for `dd-client` CLI sessions.
 
-The current vertical slice targets PR preview testing against:
+The desktop CLI owns agent selection, session creation, enrollment, and full
+terminal attach. The iOS app only opens a desktop-generated session link and
+shows the replayed transcript.
+
+## Desktop Flow
+
+Start or reattach a CLI session first:
 
 ```bash
-https://dd-pr-261-api-23bf4739-7737-483f-9256-1d184cbb7fab.devopsdefender.com
+cd ~/src/dd-client
+
+cargo run -p dd-client -- shell \
+  --url "$AGENT_URL" \
+  --key "$HOME/.config/devopsdefender/noise.key" \
+  --insecure-skip-quote-verify \
+  --recipe codex-podman \
+  --name "dogfood codex"
 ```
 
-The app defaults to that URL and, on simulator or "Designed for iPad on Mac",
-tries `~/.config/devopsdefender/noise.key`. On sandboxed installs, use the
-"Use app support key path" button and paste/import the Noise key content.
+Detach without closing the session with `Ctrl-]`, then list sessions if needed:
 
-To copy the local key as hex for paste/import:
+```bash
+cargo run -p dd-client -- sessions \
+  --url "$AGENT_URL" \
+  --key "$HOME/.config/devopsdefender/noise.key" \
+  --insecure-skip-quote-verify
+```
+
+Generate the iOS link:
+
+```bash
+cargo run -p dd-client -- mobile-link \
+  --url "$AGENT_URL" \
+  --key "$HOME/.config/devopsdefender/noise.key" \
+  --id "$SESSION_ID" \
+  --include-key
+```
+
+Open the printed `devopsdefender://session?...` link on iOS, or render the QR
+with the printed `qrencode` command. With `--include-key`, the link contains the
+Noise private key and the app imports it before replaying; treat the link or QR
+as secret.
+
+## Key Import Fallback
+
+Prefer `--include-key` so the link is self-contained. If you omit it, the app
+can only replay after a key has already been imported into its Application
+Support directory.
 
 ```bash
 xxd -p -c 256 "$HOME/.config/devopsdefender/noise.key" | pbcopy
@@ -22,22 +57,12 @@ xxd -p -c 256 "$HOME/.config/devopsdefender/noise.key" | pbcopy
 
 ## App Workflow
 
-- The first card is "Quick setup". Tap "Use defaults & load" for PR preview
-  testing; it restores the PR #261 URL, uses the default Noise key path, skips
-  quote verification, and loads recipes plus sessions.
-- If the key is not found, copy the 32-byte Noise key as hex/base64, then use
-  the app's paste/import control. "Use app key path" switches to app storage for
-  sandboxed installs.
-- Tap "Create shell session" to create a session with recipe `shell`.
-- Select a session, then use "Replay transcript" or "Attach / refresh output".
-- Use "Reader" and the zoom stepper for larger transcript text when reading
-  output on mobile.
-- Use quick write controls for common agent prompts: `1`, `2`, `Enter`, or a
-  short custom line. Attach/write/detach does not close the remote session.
-- Enable session notifications to get a local notification when a newly listed
-  session appears while the app is active.
+- Open a `devopsdefender://session?...` link or scan its QR code.
+- The app imports the embedded key when present.
+- The app replays the linked session transcript.
 
-This app intentionally does not embed a browser shell or fallback web terminal.
+The app intentionally does not create sessions, list recipes, browse agents,
+attach for live I/O, or send input.
 
 ## Prerequisites
 
@@ -64,71 +89,3 @@ The Xcode project is generated from `project.yml`. Keep
 `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES` and
 `SUPPORTS_MACCATALYST = NO`; this target is iOS compatibility mode, not
 Catalyst.
-
-## Build For iOS Simulator
-
-Use an available simulator destination from `xcodebuild -showdestinations`.
-Example compile command:
-
-```bash
-cd apps/ios
-xcodebuild \
-  -project DevOpsDefender.xcodeproj \
-  -scheme DevOpsDefender \
-  -configuration Debug \
-  -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath /private/tmp/dd-client-xcode-derived \
-  ARCHS=arm64 \
-  ONLY_ACTIVE_ARCH=YES \
-  CODE_SIGNING_ALLOWED=NO \
-  build
-```
-
-## Build For "Designed For iPad On Mac"
-
-Compile without signing:
-
-```bash
-cd apps/ios
-xcodebuild -project DevOpsDefender.xcodeproj -scheme DevOpsDefender -showdestinations
-xcodebuild \
-  -project DevOpsDefender.xcodeproj \
-  -scheme DevOpsDefender \
-  -configuration Debug \
-  -destination 'platform=macOS,id=<my-mac-designed-for-ipad-id>' \
-  -derivedDataPath /private/tmp/dd-client-xcode-derived \
-  CODE_SIGNING_ALLOWED=NO \
-  build
-```
-
-Build/sign for local "My Mac (Designed for iPad)":
-
-```bash
-cd apps/ios
-DD_DEVELOPMENT_TEAM=<apple-team-id> ./run-designed-for-ipad-on-mac.sh
-```
-
-The script defaults the bundle identifier to
-`dev.devopsdefender.client.team<apple-team-id>` and passes
-`-allowProvisioningUpdates` so Xcode can create a local development profile.
-If Apple reports that a bundle identifier is unavailable, choose another unique
-one:
-
-```bash
-DD_DEVELOPMENT_TEAM=<apple-team-id> \
-DD_BUNDLE_ID=com.<your-name>.devopsdefender.client \
-./run-designed-for-ipad-on-mac.sh
-```
-
-`xcodebuild` can build the local Mac compatibility destination, but
-`devicectl` does not list that destination. After the script builds the signed
-app, open `DevOpsDefender.xcodeproj`, select "My Mac (Designed for iPad)", and
-press Run.
-
-For a physical iPhone or iPad, install and launch with CoreDevice:
-
-```bash
-cd apps/ios
-xcrun devicectl list devices
-DD_DEVELOPMENT_TEAM=<apple-team-id> DD_COREDEVICE_ID=<device-id> ./run-designed-for-ipad-on-mac.sh
-```

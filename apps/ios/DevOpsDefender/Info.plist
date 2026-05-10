@@ -17,6 +17,17 @@
   <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
   <key>CFBundleShortVersionString</key>
   <string>0.1</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>DevOps Defender Session</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>devopsdefender</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
@@ -28,4 +39,3 @@
   </dict>
 </dict>
 </plist>
-

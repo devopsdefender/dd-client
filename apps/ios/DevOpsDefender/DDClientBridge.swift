@@ -1,26 +1,8 @@
 import Foundation
-import UserNotifications
 
 struct AgentSettings: Sendable {
     var agentURL: String
     var keyPath: String
-    var insecureSkipQuoteVerify: Bool
-    var itaAPIKey: String
-    var itaBaseURL: String
-    var itaJwksURL: String
-    var itaIssuer: String
-}
-
-struct RecipeSummary: Identifiable, Sendable {
-    let id: String
-    let title: String
-    let detail: String
-}
-
-struct SessionSummary: Identifiable, Sendable {
-    let id: String
-    let title: String
-    let detail: String
 }
 
 struct DDClientError: LocalizedError {
@@ -32,61 +14,44 @@ struct DDClientError: LocalizedError {
 }
 
 enum DDClientBridge {
-    static func importKey(keyPath: String, keyContent: String) throws -> [String: Any] {
-        try request([
+    static func importKey(keyPath: String, keyContent: String) throws {
+        _ = try request([
             "operation": "import_key",
             "key_path": keyPath,
             "key_content": keyContent
         ])
     }
 
-    static func listRecipes(settings: AgentSettings) throws -> [String: Any] {
-        try request(basePayload("recipes", settings: settings))
-    }
-
-    static func listSessions(settings: AgentSettings) throws -> [String: Any] {
-        try request(basePayload("sessions", settings: settings))
-    }
-
-    static func createShellSession(settings: AgentSettings) throws -> [String: Any] {
-        var payload = basePayload("create_session", settings: settings)
-        payload["recipe"] = "shell"
-        payload["name"] = "iOS shell"
-        return try request(payload)
-    }
-
-    static func replaySession(id: String, settings: AgentSettings) throws -> [String: Any] {
-        var payload = basePayload("replay_session", settings: settings)
-        payload["id"] = id
-        return try request(payload)
-    }
-
-    static func attachExchange(
-        id: String,
-        input: String,
-        maxBytes: Int,
-        idleTimeoutMS: Int,
-        settings: AgentSettings
-    ) throws -> [String: Any] {
-        var payload = basePayload("attach_exchange", settings: settings)
-        payload["id"] = id
-        payload["input"] = input
-        payload["max_bytes"] = maxBytes
-        payload["idle_timeout_ms"] = idleTimeoutMS
-        return try request(payload)
-    }
-
-    private static func basePayload(_ operation: String, settings: AgentSettings) -> [String: Any] {
-        [
-            "operation": operation,
+    static func transcriptSnapshot(id: String, settings: AgentSettings) throws -> [String: Any] {
+        try request([
+            "operation": "attach_exchange",
             "agent_url": settings.agentURL,
             "key_path": settings.keyPath,
-            "insecure_skip_quote_verify": settings.insecureSkipQuoteVerify,
-            "ita_api_key": settings.itaAPIKey,
-            "ita_base_url": settings.itaBaseURL,
-            "ita_jwks_url": settings.itaJwksURL,
-            "ita_issuer": settings.itaIssuer
-        ]
+            "insecure_skip_quote_verify": true,
+            "ita_api_key": "",
+            "ita_base_url": "",
+            "ita_jwks_url": "",
+            "ita_issuer": "",
+            "id": id,
+            "input": "",
+            "max_bytes": 131072,
+            "idle_timeout_ms": 250
+        ])
+    }
+
+    static func transcriptHistory(id: String, settings: AgentSettings) throws -> [String: Any] {
+        try request([
+            "operation": "replay_session",
+            "agent_url": settings.agentURL,
+            "key_path": settings.keyPath,
+            "insecure_skip_quote_verify": true,
+            "ita_api_key": "",
+            "ita_base_url": "",
+            "ita_jwks_url": "",
+            "ita_issuer": "",
+            "id": id,
+            "max_bytes": 49152
+        ])
     }
 
     private static func request(_ payload: [String: Any]) throws -> [String: Any] {
@@ -98,7 +63,6 @@ enum DDClientBridge {
         let responsePointer = requestJSON.withCString { requestCString in
             dd_client_agent_request(requestCString)
         }
-
         guard let responsePointer else {
             throw DDClientError(message: "Rust FFI returned a null response")
         }
@@ -120,22 +84,6 @@ enum DDClientBridge {
 }
 
 enum AppDefaults {
-    static let previewAgentURL = "https://dd-pr-261-api-23bf4739-7737-483f-9256-1d184cbb7fab.devopsdefender.com"
-    static let itaBaseURL = "https://api.trustauthority.intel.com"
-    static let itaJwksURL = "https://portal.trustauthority.intel.com/certs"
-    static let itaIssuer = "https://portal.trustauthority.intel.com"
-
-    static var defaultKeyPath: String {
-        #if targetEnvironment(simulator)
-        return hostNoiseKeyPath
-        #else
-        if ProcessInfo.processInfo.isiOSAppOnMac {
-            return hostNoiseKeyPath
-        }
-        return appSupportNoiseKeyPath
-        #endif
-    }
-
     static var appSupportNoiseKeyPath: String {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSHomeDirectory())
@@ -144,222 +92,105 @@ enum AppDefaults {
             .appendingPathComponent("noise.key")
             .path
     }
-
-    private static var hostNoiseKeyPath: String {
-        let environment = ProcessInfo.processInfo.environment
-        if let simulatorHostHome = environment["SIMULATOR_HOST_HOME"],
-           simulatorHostHome.hasPrefix("/Users/") {
-            return simulatorHostHome + "/.config/devopsdefender/noise.key"
-        }
-        if let hostHome = environment["HOME"],
-           hostHome.hasPrefix("/Users/"),
-           !hostHome.contains("/CoreSimulator/Devices/") {
-            return hostHome + "/.config/devopsdefender/noise.key"
-        }
-        let userName = NSUserName()
-        if userName.isEmpty {
-            return appSupportNoiseKeyPath
-        }
-        return "/Users/\(userName)/.config/devopsdefender/noise.key"
-    }
 }
 
 @MainActor
 final class ClientViewModel: ObservableObject {
-    @Published var agentURL = AppDefaults.previewAgentURL
-    @Published var keyPath = AppDefaults.defaultKeyPath
-    @Published var keyContent = ""
-    @Published var insecureSkipQuoteVerify = true
-    @Published var itaAPIKey = ""
-    @Published var itaBaseURL = AppDefaults.itaBaseURL
-    @Published var itaJwksURL = AppDefaults.itaJwksURL
-    @Published var itaIssuer = AppDefaults.itaIssuer
-    @Published var recipes: [RecipeSummary] = []
-    @Published var sessions: [SessionSummary] = []
     @Published var selectedSessionID = ""
-    @Published var quickInput = ""
     @Published var transcript = ""
-    @Published var rawResponse = ""
-    @Published var status = "Ready"
+    @Published var status = "Open a mobile link from desktop"
     @Published var isBusy = false
-    @Published var transcriptFontSize = 15.0
-    @Published var notifyOnSessionChanges = false {
-        didSet {
-            if notifyOnSessionChanges {
-                requestNotificationPermission()
-            }
+
+    private var agentURL = ""
+    private var keyPath = AppDefaults.appSupportNoiseKeyPath
+    private var refreshTask: Task<Void, Never>?
+    private var terminalRenderer = TerminalScreenRenderer(width: 96, maxRows: 160)
+
+    var hasLinkedSession: Bool {
+        !selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var linkedSessionTitle: String {
+        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.isEmpty {
+            return "No linked session"
         }
+        return "Session \(String(id.prefix(8)))"
     }
 
-    private var lastSessionIDs = Set<String>()
-
-    var settings: AgentSettings {
-        AgentSettings(
-            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            keyPath: keyPath.expandingTildePath,
-            insecureSkipQuoteVerify: insecureSkipQuoteVerify,
-            itaAPIKey: itaAPIKey.trimmingCharacters(in: .whitespacesAndNewlines),
-            itaBaseURL: itaBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            itaJwksURL: itaJwksURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            itaIssuer: itaIssuer.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-    }
-
-    func usePreviewDefaults() {
-        agentURL = AppDefaults.previewAgentURL
-        keyPath = AppDefaults.defaultKeyPath
-        insecureSkipQuoteVerify = true
-        itaAPIKey = ""
-        itaBaseURL = AppDefaults.itaBaseURL
-        itaJwksURL = AppDefaults.itaJwksURL
-        itaIssuer = AppDefaults.itaIssuer
-        status = "Using PR preview defaults"
-    }
-
-    func usePreviewDefaultsAndLoad() {
-        usePreviewDefaults()
-        let settings = settings
-        run("Checking setup") {
-            let recipesResponse = try DDClientBridge.listRecipes(settings: settings)
-            let sessionsResponse = try DDClientBridge.listSessions(settings: settings)
-            let recipes = extractRecipes(from: recipesResponse["value"])
-            let sessions = extractSessions(from: sessionsResponse["value"])
-            return ClientUpdate(
-                status: "Ready: \(recipes.count) recipes, \(sessions.count) sessions",
-                recipes: recipes,
-                sessions: sessions,
-                rawResponse: prettyJSONString([
-                    "recipes": recipesResponse,
-                    "sessions": sessionsResponse
-                ])
-            )
+    func openMobileLink(_ url: URL) {
+        guard url.scheme == "devopsdefender",
+              url.host == "session",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            status = "Unsupported mobile link"
+            return
         }
-    }
 
-    func useAppSupportKeyPath() {
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            query[item.name] = item.value
+        }
+
+        guard let agent = query["agent"], !agent.isEmpty,
+              let id = query["id"], !id.isEmpty else {
+            status = "Mobile link missing agent or session"
+            return
+        }
+
+        refreshTask?.cancel()
+        agentURL = agent
+        selectedSessionID = id
         keyPath = AppDefaults.appSupportNoiseKeyPath
+        transcript = ""
+        terminalRenderer = TerminalScreenRenderer(width: 96, maxRows: 160)
+
+        if let key = query["key"], !key.isEmpty {
+            importKeyAndLoadTranscript(key)
+            return
+        }
+
+        if FileManager.default.fileExists(atPath: keyPath.expandingTildePath) {
+            loadTranscript()
+        } else {
+            status = "Linked \(linkedSessionTitle); link did not include key"
+        }
     }
 
-    func importPastedKey() {
+    private func importKeyAndLoadTranscript(_ key: String) {
         let path = keyPath.expandingTildePath
-        let content = keyContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else {
-            status = "Paste a 32-byte key as hex or base64 first"
-            return
-        }
-        run("Importing key") {
-            let response = try DDClientBridge.importKey(keyPath: path, keyContent: content)
-            return ClientUpdate(
-                status: "Imported key to \(response["key_path"] as? String ?? path)",
-                rawResponse: prettyJSONString(response)
-            )
+        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settings = AgentSettings(
+            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPath: path
+        )
+        run("Importing key", keepRefreshing: true) {
+            try DDClientBridge.importKey(keyPath: path, keyContent: key)
+            return initialTranscriptUpdate(id: id, settings: settings)
         }
     }
 
-    func loadRecipes() {
-        let settings = settings
-        run("Loading recipes") {
-            let response = try DDClientBridge.listRecipes(settings: settings)
-            return ClientUpdate(
-                status: "Loaded recipes",
-                recipes: extractRecipes(from: response["value"]),
-                rawResponse: prettyJSONString(response)
-            )
-        }
-    }
-
-    func loadSessions() {
-        let settings = settings
-        run("Loading sessions") {
-            let response = try DDClientBridge.listSessions(settings: settings)
-            let sessions = extractSessions(from: response["value"])
-            return ClientUpdate(
-                status: "Loaded \(sessions.count) sessions",
-                sessions: sessions,
-                rawResponse: prettyJSONString(response)
-            )
-        }
-    }
-
-    func createShellSession() {
-        let settings = settings
-        run("Creating shell session") {
-            let response = try DDClientBridge.createShellSession(settings: settings)
-            let id = response["session_id"] as? String ?? ""
-            return ClientUpdate(
-                status: id.isEmpty ? "Created shell session" : "Created shell session \(id)",
-                selectedSessionID: id,
-                rawResponse: prettyJSONString(response)
-            )
-        }
-    }
-
-    func replaySelectedSession() {
+    private func loadTranscript() {
         let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
-            status = "Select or enter a session id first"
+            status = "No linked session"
             return
         }
-        let settings = settings
-        run("Replaying session") {
-            let response = try DDClientBridge.replaySession(id: id, settings: settings)
-            return ClientUpdate(
-                status: "Replayed \(id)",
-                transcript: transcriptText(from: response["value"]),
-                rawResponse: prettyJSONString(response)
-            )
+        let settings = AgentSettings(
+            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPath: keyPath.expandingTildePath
+        )
+        run("Loading transcript", keepRefreshing: true) {
+            initialTranscriptUpdate(id: id, settings: settings)
         }
     }
 
-    func attachSelectedSession() {
-        attach(input: "", statusText: "Attaching for output")
-    }
-
-    func sendQuickInput(_ input: String? = nil) {
-        let text = input ?? quickInput
-        guard !text.isEmpty else {
-            status = "Enter text or use a quick key"
-            return
-        }
-        let normalized = text.hasSuffix("\n") ? text : text + "\n"
-        attach(input: normalized, statusText: "Sending short input")
-        if input == nil {
-            quickInput = ""
-        }
-    }
-
-    func selectSession(_ session: SessionSummary) {
-        selectedSessionID = session.id
-        transcript = session.detail
-    }
-
-    private func attach(input: String, statusText: String) {
-        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else {
-            status = "Select or enter a session id first"
-            return
-        }
-        let settings = settings
-        run(statusText) {
-            let response = try DDClientBridge.attachExchange(
-                id: id,
-                input: input,
-                maxBytes: 128 * 1024,
-                idleTimeoutMS: 1200,
-                settings: settings
-            )
-            let text = response["text"] as? String ?? ""
-            return ClientUpdate(
-                status: input.isEmpty ? "Attached and detached without closing \(id)" : "Sent input and detached without closing \(id)",
-                transcript: text.isEmpty ? "(no new output before idle timeout)" : text,
-                rawResponse: prettyJSONString(response)
-            )
-        }
-    }
-
-    private func run(_ pendingStatus: String, work: @escaping @Sendable () throws -> ClientUpdate) {
+    private func run(
+        _ pendingStatus: String,
+        keepRefreshing: Bool = false,
+        work: @escaping @Sendable () throws -> ClientUpdate
+    ) {
         guard !isBusy else {
-            status = "Another request is already running"
+            status = "Already loading"
             return
         }
         isBusy = true
@@ -369,6 +200,44 @@ final class ClientViewModel: ObservableObject {
                 let update = try await Task.detached(priority: .userInitiated) {
                     try work()
                 }.value
+                status = update.status
+                apply(update)
+                if keepRefreshing {
+                    startRefreshing()
+                }
+            } catch {
+                status = error.localizedDescription
+            }
+            isBusy = false
+        }
+    }
+
+    private func startRefreshing() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                self?.refreshTranscript()
+            }
+        }
+    }
+
+    private func refreshTranscript() {
+        guard hasLinkedSession, !isBusy else {
+            return
+        }
+        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settings = AgentSettings(
+            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPath: keyPath.expandingTildePath
+        )
+        isBusy = true
+        Task {
+            do {
+                let update = try await Task.detached(priority: .utility) {
+                    try transcriptUpdate(id: id, settings: settings)
+                }.value
+                status = update.status
                 apply(update)
             } catch {
                 status = error.localizedDescription
@@ -378,62 +247,59 @@ final class ClientViewModel: ObservableObject {
     }
 
     private func apply(_ update: ClientUpdate) {
-        status = update.status
-        rawResponse = update.rawResponse ?? rawResponse
-        if let recipes = update.recipes {
-            self.recipes = recipes
+        guard !update.terminalText.isEmpty else {
+            return
         }
-        if let sessions = update.sessions {
-            handleSessionUpdate(sessions)
-        }
-        if let selectedSessionID = update.selectedSessionID, !selectedSessionID.isEmpty {
-            self.selectedSessionID = selectedSessionID
-        }
-        if let transcript = update.transcript {
-            self.transcript = transcript
-        }
-    }
-
-    private func handleSessionUpdate(_ sessions: [SessionSummary]) {
-        let newIDs = Set(sessions.map(\.id))
-        let added = newIDs.subtracting(lastSessionIDs)
-        self.sessions = sessions
-        if notifyOnSessionChanges, !lastSessionIDs.isEmpty, !added.isEmpty {
-            scheduleNotification(title: "DevOps Defender sessions changed", body: "New sessions: \(added.sorted().joined(separator: ", "))")
-        }
-        lastSessionIDs = newIDs
-    }
-
-    private func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
-
-    private func scheduleNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        let request = UNNotificationRequest(
-            identifier: "dd-client-session-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+        terminalRenderer.feed(update.terminalText.unicodeScalars)
+        let rendered = terminalRenderer.renderedText()
+        transcript = rendered.isEmpty ? "(no transcript output before idle timeout)" : rendered
     }
 }
 
 private struct ClientUpdate: Sendable {
     var status: String
-    var recipes: [RecipeSummary]?
-    var sessions: [SessionSummary]?
-    var selectedSessionID: String?
-    var transcript: String?
-    var rawResponse: String?
+    var terminalText: String
 }
 
 private extension String {
     var expandingTildePath: String {
         (self as NSString).expandingTildeInPath
     }
+}
+
+private func transcriptUpdate(id: String, settings: AgentSettings) throws -> ClientUpdate {
+    let response = try DDClientBridge.transcriptSnapshot(id: id, settings: settings)
+    return ClientUpdate(
+        status: "Loaded \(id)",
+        terminalText: transcriptText(from: response)
+    )
+}
+
+private func initialTranscriptUpdate(id: String, settings: AgentSettings) -> ClientUpdate {
+    if let response = try? DDClientBridge.transcriptHistory(id: id, settings: settings) {
+        let history = historyText(from: response)
+        if !history.isEmpty {
+            return ClientUpdate(status: "Loaded \(id)", terminalText: history)
+        }
+    }
+    return (try? transcriptUpdate(id: id, settings: settings))
+        ?? ClientUpdate(status: "Loaded \(id)", terminalText: "")
+}
+
+private func transcriptText(from value: Any?) -> String {
+    if let text = firstString(for: ["transcript", "output", "text", "stdout", "data"], in: value) {
+        return text
+    }
+    return prettyJSONString(value ?? [:])
+}
+
+private func historyText(from value: Any?) -> String {
+    guard let encoded = firstString(for: ["bytes_b64"], in: value),
+          let data = Data(base64Encoded: encoded),
+          let text = String(data: data, encoding: .utf8) else {
+        return transcriptText(from: value)
+    }
+    return text
 }
 
 private func prettyJSONString(_ value: Any) -> String {
@@ -443,13 +309,6 @@ private func prettyJSONString(_ value: Any) -> String {
         return "\(value)"
     }
     return text
-}
-
-private func transcriptText(from value: Any?) -> String {
-    if let text = firstString(for: ["transcript", "output", "text", "stdout", "data"], in: value) {
-        return text
-    }
-    return prettyJSONString(value ?? [:])
 }
 
 private func firstString(for keys: [String], in value: Any?) -> String? {
@@ -475,60 +334,297 @@ private func firstString(for keys: [String], in value: Any?) -> String? {
     return nil
 }
 
-private func extractRecipes(from value: Any?) -> [RecipeSummary] {
-    extractDictionaries(from: value).compactMap { dict in
-        guard let id = stringValue(dict["id"]) ?? stringValue(dict["recipe_id"]) ?? stringValue(dict["name"]) else {
+private final class TerminalScreenRenderer {
+    private let width: Int
+    private let maxRows: Int
+    private var rows: [[UnicodeScalar]]
+    private var row = 0
+    private var column = 0
+
+    init(width: Int, maxRows: Int) {
+        self.width = width
+        self.maxRows = maxRows
+        self.rows = [Self.blankRow(width: width)]
+    }
+
+    func feed(_ scalars: String.UnicodeScalarView) {
+        feed(Array(scalars))
+    }
+
+    func renderedText() -> String {
+        rows
+            .map { trimTrailingSpaces(String(String.UnicodeScalarView($0))) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func feed(_ scalars: [UnicodeScalar]) {
+    var index = 0
+
+    while index < scalars.count {
+        let scalar = scalars[index]
+        let value = scalar.value
+
+        if value == 0x1B {
+                index = handleEscapeSequence(in: scalars, from: index)
+                continue
+            }
+
+            if value == 0x9B {
+                index = handleCSISequence(in: scalars, from: index + 1)
+                continue
+            }
+
+            if value == 0x9D {
+                index = skipOSCSequence(in: scalars, from: index + 1)
+            continue
+        }
+
+            if let next = skipOrphanCSIFragmentIfPresent(in: scalars, from: index) {
+                index = next
+                continue
+            }
+
+        if value == 0x08 {
+                column = max(0, column - 1)
+            index += 1
+            continue
+        }
+
+        if value == 0x0D {
+                column = 0
+            index += 1
+            continue
+        }
+
+            if value == 0x0A {
+                row += 1
+                column = 0
+                clampCursor()
+                index += 1
+                continue
+            }
+
+            if value == 0x09 {
+                let spaces = max(1, 4 - (column % 4))
+                for _ in 0..<spaces {
+                    put(" ")
+                }
+                index += 1
+                continue
+            }
+
+            if value >= 0x20 {
+                put(scalar)
+        }
+        index += 1
+    }
+    }
+
+    private func put(_ scalar: UnicodeScalar) {
+        clampCursor()
+        rows[row][column] = scalar
+        column += 1
+        if column >= width {
+            column = 0
+            row += 1
+            clampCursor()
+            }
+        }
+
+    private func clampCursor() {
+        row = max(0, row)
+        column = max(0, min(column, width - 1))
+        while rows.count <= row {
+            rows.append(Self.blankRow(width: width))
+        }
+        while rows.count > maxRows {
+            rows.removeFirst()
+            row = max(0, row - 1)
+        }
+    }
+
+    private func handleEscapeSequence(in scalars: [UnicodeScalar], from start: Int) -> Int {
+        let index = start + 1
+        guard index < scalars.count else {
+            return index
+        }
+
+        let introducer = scalars[index].value
+        if introducer == 0x5B {
+            return handleCSISequence(in: scalars, from: index + 1)
+        }
+        if introducer == 0x5D {
+            return skipOSCSequence(in: scalars, from: index + 1)
+        }
+
+        return min(index + 1, scalars.count)
+    }
+
+    private func skipOSCSequence(in scalars: [UnicodeScalar], from start: Int) -> Int {
+        var index = start
+        while index < scalars.count {
+            let value = scalars[index].value
+            if value == 0x07 {
+                return index + 1
+            }
+            if value == 0x1B, index + 1 < scalars.count, scalars[index + 1].value == 0x5C {
+                return index + 2
+        }
+            index += 1
+        }
+        return index
+    }
+
+    private func skipOrphanCSIFragmentIfPresent(in scalars: [UnicodeScalar], from start: Int) -> Int? {
+        guard start < scalars.count else {
             return nil
         }
-        let title = stringValue(dict["name"]) ?? id
-        let detail = [stringValue(dict["description"]), stringValue(dict["command"])]
-            .compactMap { $0 }
-            .joined(separator: " ")
-        return RecipeSummary(id: id, title: title, detail: detail)
-    }
-}
-
-private func extractSessions(from value: Any?) -> [SessionSummary] {
-    extractDictionaries(from: value).compactMap { dict in
-        guard let id = stringValue(dict["id"]) ?? stringValue(dict["session_id"]) else {
+        let first = scalars[start].value
+        guard first == 0x3B || first == 0x3F || first == 0x5B else {
             return nil
         }
-        let title = stringValue(dict["name"]) ?? stringValue(dict["recipe_id"]) ?? "Session"
-        let detail = [
-            stringValue(dict["status"]),
-            stringValue(dict["state"]),
-            stringValue(dict["recipe"]),
-            stringValue(dict["recipe_id"]),
-            stringValue(dict["created_at"]),
-            stringValue(dict["updated_at"])
-        ]
-        .compactMap { $0 }
-        .joined(separator: " · ")
-        return SessionSummary(id: id, title: title, detail: detail)
-    }
-}
 
-private func extractDictionaries(from value: Any?) -> [[String: Any]] {
-    if let dict = value as? [String: Any] {
-        var result = [dict]
-        for nested in dict.values {
-            result.append(contentsOf: extractDictionaries(from: nested))
+        var index = start
+        if first == 0x5B {
+            index += 1
         }
-        return result
-    }
-    if let array = value as? [Any] {
-        return array.flatMap { extractDictionaries(from: $0) }
-    }
-    return []
-}
 
-private func stringValue(_ value: Any?) -> String? {
-    switch value {
-    case let value as String where !value.isEmpty:
-        return value
-    case let value as NSNumber:
-        return value.stringValue
-    default:
+        let scanLimit = min(index + 20, scalars.count)
+        while index < scanLimit {
+            let value = scalars[index].value
+            if value >= 0x30, value <= 0x39
+                || value == 0x3B
+                || value == 0x3F
+                || value == 0x3D
+                || value == 0x3E
+                || value == 0x3C {
+                index += 1
+                continue
+            }
+
+            if isCSIControlFinal(value) {
+                return index + 1
+            }
+            return nil
+        }
         return nil
     }
+
+    private func isCSIControlFinal(_ value: UInt32) -> Bool {
+        switch value {
+        case 0x41, 0x42, 0x43, 0x44, 0x47, 0x48, 0x4A, 0x4B, 0x66, 0x68, 0x6C, 0x6D:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func handleCSISequence(in scalars: [UnicodeScalar], from start: Int) -> Int {
+        var index = start
+        var raw = ""
+        while index < scalars.count {
+            let value = scalars[index].value
+            if value >= 0x40, value <= 0x7E {
+                applyCSI(raw, final: Character(UnicodeScalar(value)!))
+            index += 1
+                return index
+            }
+            raw.unicodeScalars.append(scalars[index])
+            index += 1
+        }
+        return index
+    }
+
+    private func applyCSI(_ raw: String, final: Character) {
+        let params = parseCSIParams(raw)
+        let amount = max(1, params.first ?? 1)
+
+        switch final {
+        case "A":
+            row -= amount
+        case "B":
+            row += amount
+        case "C":
+            column += amount
+        case "D":
+            column -= amount
+        case "G":
+            column = max(0, amount - 1)
+        case "H", "f":
+            row = max(0, (params.first ?? 1) - 1)
+            column = max(0, (params.dropFirst().first ?? 1) - 1)
+        case "J":
+            eraseDisplay(mode: params.first ?? 0)
+        case "K":
+            eraseLine(mode: params.first ?? 0)
+        default:
+            break
+        }
+        clampCursor()
+    }
+
+    private func eraseDisplay(mode: Int) {
+        clampCursor()
+        switch mode {
+        case 2, 3:
+            rows = [Self.blankRow(width: width)]
+            row = 0
+            column = 0
+        case 1:
+            for y in 0...row {
+                let end = y == row ? column : width - 1
+                guard end >= 0 else { continue }
+                for x in 0...end {
+                    rows[y][x] = " "
+                }
+            }
+        default:
+            for y in row..<rows.count {
+                let start = y == row ? column : 0
+                guard start < width else { continue }
+                for x in start..<width {
+                    rows[y][x] = " "
+                }
+            }
+        }
+    }
+
+    private func eraseLine(mode: Int) {
+        clampCursor()
+        switch mode {
+        case 1:
+            for x in 0...column {
+                rows[row][x] = " "
+            }
+        case 2:
+            rows[row] = Self.blankRow(width: width)
+        default:
+            for x in column..<width {
+                rows[row][x] = " "
+            }
+        }
+    }
+
+    private func parseCSIParams(_ raw: String) -> [Int] {
+        let cleaned = raw.trimmingCharacters(in: CharacterSet(charactersIn: "?=><"))
+        if cleaned.isEmpty {
+            return []
+        }
+        return cleaned.split(separator: ";", omittingEmptySubsequences: false).map {
+            Int($0) ?? 0
+        }
+    }
+
+    private static func blankRow(width: Int) -> [UnicodeScalar] {
+        Array(repeating: " ", count: width)
+    }
+}
+
+private func trimTrailingSpaces(_ line: String) -> String {
+    var line = line
+    while line.last == " " || line.last == "\t" {
+        line.removeLast()
+    }
+    return line
 }

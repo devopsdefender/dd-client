@@ -144,12 +144,19 @@ pub async fn create_session(
     conn.call(Value::Object(body)).await
 }
 
-pub async fn replay_session(conn: &mut NoiseConnection, id: &str) -> anyhow::Result<Value> {
-    conn.call(serde_json::json!({
+pub async fn replay_session(
+    conn: &mut NoiseConnection,
+    id: &str,
+    max_bytes: Option<usize>,
+) -> anyhow::Result<Value> {
+    let mut request = serde_json::json!({
         "method": "shell.replay_session",
         "id": id,
-    }))
-    .await
+    });
+    if let Some(max_bytes) = max_bytes {
+        request["max_bytes"] = serde_json::json!(max_bytes);
+    }
+    conn.call(request).await
 }
 
 pub async fn resize_session(

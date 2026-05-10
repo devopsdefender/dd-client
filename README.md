@@ -52,5 +52,21 @@ During an attached shell, `Ctrl-]` detaches and leaves the remote session alive.
 `Ctrl-D` sends EOF to the remote shell and disconnects the local client. Use
 `dd-client close --id SESSION_ID ...` to terminate a session explicitly.
 
+Send a running session to the mobile companion app:
+
+```bash
+dd-client mobile-link \
+  --url https://agent.example.com \
+  --key ~/.config/devopsdefender/noise.key \
+  --id SESSION_ID \
+  --include-key
+```
+
+Open the printed `devopsdefender://session?...` link on iOS, or render it as a
+QR code with the printed `qrencode` command. `--include-key` puts the Noise
+private key in the handoff URL so the mobile app can import it before replaying;
+treat that link or QR code as secret. Omit `--include-key` to send only the
+agent URL and session id after the app already has the key.
+
 Quote verification is on by default. Local preview/dev runs without Intel Trust
 Authority credentials must pass `--insecure-skip-quote-verify` explicitly.
