@@ -64,9 +64,10 @@ dd-client mobile-link \
 
 Open the printed `devopsdefender://session?...` link on iOS, or render it as a
 QR code with the printed `qrencode` command. `--include-key` puts the Noise
-private key in the handoff URL so the mobile app can import it before replaying;
-treat that link or QR code as secret. Omit `--include-key` to send only the
-agent URL and session id after the app already has the key.
+private key in the handoff URL so the mobile app can import it before loading
+history and following the live transcript; treat that link or QR code as secret.
+Omit `--include-key` to send only the agent URL and session id after the app
+already has the key.
 
 Quote verification is on by default. Local preview/dev runs without Intel Trust
 Authority credentials must pass `--insecure-skip-quote-verify` explicitly.

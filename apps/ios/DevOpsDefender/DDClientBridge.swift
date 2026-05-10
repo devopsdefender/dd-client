@@ -50,8 +50,34 @@ enum DDClientBridge {
             "ita_jwks_url": "",
             "ita_issuer": "",
             "id": id,
-            "max_bytes": 49152
+            "max_bytes": 32768
         ])
+    }
+
+    static func startAttachStream(
+        id: String,
+        settings: AgentSettings,
+        onEvent: @escaping @Sendable (AttachStreamEvent) -> Void
+    ) throws -> AttachStream {
+        let payload: [String: Any] = [
+            "agent_url": settings.agentURL,
+            "key_path": settings.keyPath,
+            "insecure_skip_quote_verify": true,
+            "ita_api_key": "",
+            "ita_base_url": "",
+            "ita_jwks_url": "",
+            "ita_issuer": "",
+            "id": id,
+            "tail": true
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard let requestJSON = String(data: data, encoding: .utf8) else {
+            throw DDClientError(message: "Failed to encode stream request")
+        }
+        guard let stream = AttachStream(requestJSON: requestJSON, onEvent: onEvent) else {
+            throw DDClientError(message: "Failed to start attach stream")
+        }
+        return stream
     }
 
     private static func request(_ payload: [String: Any]) throws -> [String: Any] {
@@ -83,6 +109,61 @@ enum DDClientBridge {
     }
 }
 
+struct AttachStreamEvent: Sendable {
+    var type: String
+    var data: Data?
+    var message: String?
+}
+
+final class AttachStream {
+    private let handle: UInt64
+
+    init?(requestJSON: String, onEvent: @escaping @Sendable (AttachStreamEvent) -> Void) {
+        let context = Unmanaged.passRetained(AttachStreamContext(onEvent: onEvent)).toOpaque()
+        let handle = requestJSON.withCString { requestCString in
+            dd_client_attach_stream_start(requestCString, attachStreamCallback, context)
+        }
+        if handle == 0 {
+            Unmanaged<AttachStreamContext>.fromOpaque(context).release()
+            return nil
+        }
+        self.handle = handle
+    }
+
+    func stop() {
+        dd_client_attach_stream_stop(handle)
+    }
+
+    deinit {
+        stop()
+    }
+}
+
+private final class AttachStreamContext {
+    let onEvent: @Sendable (AttachStreamEvent) -> Void
+
+    init(onEvent: @escaping @Sendable (AttachStreamEvent) -> Void) {
+        self.onEvent = onEvent
+    }
+}
+
+private let attachStreamCallback: @convention(c) (
+    UInt64,
+    UnsafePointer<CChar>?,
+    UnsafeMutableRawPointer?
+) -> Void = { _, eventPointer, contextPointer in
+    guard let eventPointer, let contextPointer else {
+        return
+    }
+    let eventJSON = String(cString: eventPointer)
+    let event = parseAttachStreamEvent(eventJSON)
+    let context = Unmanaged<AttachStreamContext>.fromOpaque(contextPointer).takeUnretainedValue()
+    context.onEvent(event)
+    if event.type == "close" {
+        Unmanaged<AttachStreamContext>.fromOpaque(contextPointer).release()
+    }
+}
+
 enum AppDefaults {
     static var appSupportNoiseKeyPath: String {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -103,7 +184,7 @@ final class ClientViewModel: ObservableObject {
 
     private var agentURL = ""
     private var keyPath = AppDefaults.appSupportNoiseKeyPath
-    private var refreshTask: Task<Void, Never>?
+    private var attachStream: AttachStream?
     private var terminalRenderer = TerminalScreenRenderer(width: 96, maxRows: 160)
 
     var hasLinkedSession: Bool {
@@ -137,7 +218,8 @@ final class ClientViewModel: ObservableObject {
             return
         }
 
-        refreshTask?.cancel()
+        attachStream?.stop()
+        attachStream = nil
         agentURL = agent
         selectedSessionID = id
         keyPath = AppDefaults.appSupportNoiseKeyPath
@@ -163,7 +245,7 @@ final class ClientViewModel: ObservableObject {
             agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPath: path
         )
-        run("Importing key", keepRefreshing: true) {
+        run("Importing key", startStreamAfterInitialLoad: true) {
             try DDClientBridge.importKey(keyPath: path, keyContent: key)
             return initialTranscriptUpdate(id: id, settings: settings)
         }
@@ -179,14 +261,14 @@ final class ClientViewModel: ObservableObject {
             agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPath: keyPath.expandingTildePath
         )
-        run("Loading transcript", keepRefreshing: true) {
+        run("Loading transcript", startStreamAfterInitialLoad: true) {
             initialTranscriptUpdate(id: id, settings: settings)
         }
     }
 
     private func run(
         _ pendingStatus: String,
-        keepRefreshing: Bool = false,
+        startStreamAfterInitialLoad: Bool = false,
         work: @escaping @Sendable () throws -> ClientUpdate
     ) {
         guard !isBusy else {
@@ -202,8 +284,8 @@ final class ClientViewModel: ObservableObject {
                 }.value
                 status = update.status
                 apply(update)
-                if keepRefreshing {
-                    startRefreshing()
+                if startStreamAfterInitialLoad {
+                    startAttachStream()
                 }
             } catch {
                 status = error.localizedDescription
@@ -212,37 +294,43 @@ final class ClientViewModel: ObservableObject {
         }
     }
 
-    private func startRefreshing() {
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 650_000_000)
-                self?.refreshTranscript()
-            }
-        }
-    }
-
-    private func refreshTranscript() {
-        guard hasLinkedSession, !isBusy else {
+    private func startAttachStream() {
+        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else {
             return
         }
-        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        attachStream?.stop()
         let settings = AgentSettings(
             agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPath: keyPath.expandingTildePath
         )
-        isBusy = true
-        Task {
-            do {
-                let update = try await Task.detached(priority: .utility) {
-                    try transcriptUpdate(id: id, settings: settings)
-                }.value
-                status = update.status
-                apply(update)
-            } catch {
-                status = error.localizedDescription
+        do {
+            attachStream = try DDClientBridge.startAttachStream(id: id, settings: settings) { [weak self] event in
+                Task { @MainActor in
+                    self?.handleStreamEvent(event, id: id)
+                }
             }
-            isBusy = false
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func handleStreamEvent(_ event: AttachStreamEvent, id: String) {
+        switch event.type {
+        case "open":
+            status = "Connected \(id)"
+        case "bytes":
+            guard let data = event.data,
+                  let text = String(data: data, encoding: .utf8) else {
+                return
+            }
+            apply(ClientUpdate(status: "Connected \(id)", terminalText: text))
+        case "error":
+            status = event.message ?? "Stream error"
+        case "close":
+            status = "Disconnected \(id)"
+        default:
+            break
         }
     }
 
@@ -265,6 +353,18 @@ private extension String {
     var expandingTildePath: String {
         (self as NSString).expandingTildeInPath
     }
+}
+
+private func parseAttachStreamEvent(_ eventJSON: String) -> AttachStreamEvent {
+    guard let data = eventJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return AttachStreamEvent(type: "error", data: nil, message: "Invalid stream event")
+    }
+
+    let type = object["type"] as? String ?? "unknown"
+    let payload = (object["data_b64"] as? String).flatMap { Data(base64Encoded: $0) }
+    let message = object["message"] as? String
+    return AttachStreamEvent(type: type, data: payload, message: message)
 }
 
 private func transcriptUpdate(id: String, settings: AgentSettings) throws -> ClientUpdate {

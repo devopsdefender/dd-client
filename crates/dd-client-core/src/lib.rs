@@ -11,6 +11,7 @@ use serde_json::Value;
 use snow::{Builder, TransportState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -280,6 +281,50 @@ pub async fn attach_session_exchange(
     }
 
     Ok(output)
+}
+
+pub async fn attach_session_stream<F>(
+    mut conn: NoiseConnection,
+    id: &str,
+    tail: bool,
+    mut shutdown: watch::Receiver<bool>,
+    mut on_open: impl FnMut() -> anyhow::Result<()> + Send,
+    mut on_bytes: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&[u8]) -> anyhow::Result<()> + Send,
+{
+    let ack = conn
+        .call(serde_json::json!({
+            "method": "shell.attach_session",
+            "id": id,
+            "tail": tail,
+        }))
+        .await?;
+    if ack.get("error").is_some() {
+        anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
+    }
+    on_open()?;
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            frame = next_binary(&mut conn.stream) => {
+                let Some(cipher) = frame? else {
+                    break;
+                };
+                let mut plain = vec![0u8; cipher.len()];
+                let n = conn.transport.read_message(&cipher, &mut plain)?;
+                on_bytes(&plain[..n])?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Eq, PartialEq)]

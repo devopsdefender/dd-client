@@ -3,8 +3,8 @@
 Native SwiftUI companion for `dd-client` CLI sessions.
 
 The desktop CLI owns agent selection, session creation, enrollment, and full
-terminal attach. The iOS app only opens a desktop-generated session link and
-shows the replayed transcript.
+terminal attach. The iOS app only opens a desktop-generated session link, loads
+bounded transcript history, and follows the live transcript.
 
 ## Desktop Flow
 
@@ -42,13 +42,13 @@ cargo run -p dd-client -- mobile-link \
 
 Open the printed `devopsdefender://session?...` link on iOS, or render the QR
 with the printed `qrencode` command. With `--include-key`, the link contains the
-Noise private key and the app imports it before replaying; treat the link or QR
-as secret.
+Noise private key and the app imports it before loading history and following
+the transcript; treat the link or QR as secret.
 
 ## Key Import Fallback
 
 Prefer `--include-key` so the link is self-contained. If you omit it, the app
-can only replay after a key has already been imported into its Application
+can only connect after a key has already been imported into its Application
 Support directory.
 
 ```bash
@@ -59,10 +59,10 @@ xxd -p -c 256 "$HOME/.config/devopsdefender/noise.key" | pbcopy
 
 - Open a `devopsdefender://session?...` link or scan its QR code.
 - The app imports the embedded key when present.
-- The app replays the linked session transcript.
+- The app loads recent transcript history, then keeps following live output.
 
 The app intentionally does not create sessions, list recipes, browse agents,
-attach for live I/O, or send input.
+send input, or take over terminal control.
 
 ## Prerequisites
 

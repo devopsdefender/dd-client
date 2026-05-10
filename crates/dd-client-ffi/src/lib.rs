@@ -1,16 +1,20 @@
 use std::ffi::{CStr, CString};
 use std::future::Future;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 use base64::Engine as _;
 use dd_client_core::{
-    attach_session_exchange, connect, create_session, list_recipes, list_sessions, replay_session,
-    session_id, ConnectionOptions, CreateSessionRequest, IntelTrustAuthority, QuoteVerification,
+    attach_session_exchange, attach_session_stream, connect, create_session, list_recipes,
+    list_sessions, replay_session, session_id, ConnectionOptions, CreateSessionRequest,
+    IntelTrustAuthority, QuoteVerification,
 };
+use std::collections::HashMap;
+use tokio::sync::watch;
 
 const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
 const DEFAULT_ITA_JWKS_URL: &str = "https://portal.trustauthority.intel.com/certs";
@@ -18,8 +22,17 @@ const DEFAULT_ITA_ISSUER: &str = "https://portal.trustauthority.intel.com";
 const DEFAULT_ATTACH_MAX_BYTES: usize = 128 * 1024;
 const MAX_ATTACH_BYTES: usize = 1024 * 1024;
 const DEFAULT_ATTACH_IDLE_TIMEOUT_MS: u64 = 1200;
-const DEFAULT_REPLAY_MAX_BYTES: usize = 48 * 1024;
-const MAX_REPLAY_BYTES: usize = 48 * 1024;
+const DEFAULT_REPLAY_MAX_BYTES: usize = 32 * 1024;
+const MAX_REPLAY_BYTES: usize = 32 * 1024;
+
+type StreamCallback = extern "C" fn(u64, *const c_char, *mut c_void);
+
+struct StreamControl {
+    shutdown: watch::Sender<bool>,
+}
+
+static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+static STREAMS: OnceLock<Mutex<HashMap<u64, StreamControl>>> = OnceLock::new();
 
 #[no_mangle]
 pub extern "C" fn dd_client_keygen(
@@ -38,6 +51,29 @@ pub extern "C" fn dd_client_agent_request(request_json: *const c_char) -> *mut c
 }
 
 #[no_mangle]
+pub extern "C" fn dd_client_attach_stream_start(
+    request_json: *const c_char,
+    callback: Option<StreamCallback>,
+    context: *mut c_void,
+) -> u64 {
+    attach_stream_start(request_json, callback, context).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn dd_client_attach_stream_stop(handle: u64) {
+    if handle == 0 {
+        return;
+    }
+    if let Some(control) = streams()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(&handle))
+    {
+        let _ = control.shutdown.send(true);
+    }
+}
+
+#[no_mangle]
 /// # Safety
 ///
 /// `value` must be a pointer returned by this library, and it must not have
@@ -47,6 +83,112 @@ pub unsafe extern "C" fn dd_client_string_free(value: *mut c_char) {
         return;
     }
     let _ = unsafe { CString::from_raw(value) };
+}
+
+fn attach_stream_start(
+    request_json: *const c_char,
+    callback: Option<StreamCallback>,
+    context: *mut c_void,
+) -> Result<u64, String> {
+    let callback = callback.ok_or_else(|| "callback is required".to_string())?;
+    let request_json = required_c_string(request_json, "request_json")?;
+    let request: serde_json::Value =
+        serde_json::from_str(&request_json).map_err(|e| format!("parse request_json: {e}"))?;
+    let opts = connection_options_from_request(&request)?;
+    let id = required_json_string(&request, "id")?;
+    let tail = bool_json_field(&request, "tail")?.unwrap_or(true);
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let handle = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+
+    streams()
+        .lock()
+        .map_err(|_| "stream registry lock poisoned".to_string())?
+        .insert(handle, StreamControl { shutdown });
+
+    let context_addr = context as usize;
+    let worker = thread::Builder::new()
+        .name(format!("dd-client-attach-{handle}"))
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let result = runtime().and_then(|runtime| {
+                runtime
+                    .block_on(async move {
+                        let conn = connect(&opts).await?;
+                        attach_session_stream(
+                            conn,
+                            &id,
+                            tail,
+                            shutdown_rx,
+                            || {
+                                emit_stream_event(
+                                    callback,
+                                    context_addr,
+                                    handle,
+                                    serde_json::json!({"type": "open", "id": id}),
+                                );
+                                Ok(())
+                            },
+                            |bytes| {
+                                emit_stream_event(
+                                    callback,
+                                    context_addr,
+                                    handle,
+                                    serde_json::json!({
+                                        "type": "bytes",
+                                        "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    }),
+                                );
+                                Ok(())
+                            },
+                        )
+                        .await
+                    })
+                    .map_err(|e| e.to_string())
+            });
+            if let Err(error) = result {
+                emit_stream_event(
+                    callback,
+                    context_addr,
+                    handle,
+                    serde_json::json!({"type": "error", "message": error}),
+                );
+            }
+            if let Ok(mut map) = streams().lock() {
+                map.remove(&handle);
+            }
+            emit_stream_event(
+                callback,
+                context_addr,
+                handle,
+                serde_json::json!({"type": "close"}),
+            );
+        });
+
+    if let Err(error) = worker {
+        if let Ok(mut map) = streams().lock() {
+            map.remove(&handle);
+        }
+        return Err(format!("spawn attach stream: {error}"));
+    }
+
+    Ok(handle)
+}
+
+fn emit_stream_event(
+    callback: StreamCallback,
+    context_addr: usize,
+    handle: u64,
+    event: serde_json::Value,
+) {
+    if let Ok(event_json) = serde_json::to_string(&event) {
+        if let Ok(c_event) = CString::new(event_json) {
+            callback(handle, c_event.as_ptr(), context_addr as *mut c_void);
+        }
+    }
+}
+
+fn streams() -> &'static Mutex<HashMap<u64, StreamControl>> {
+    STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn keygen_response(
