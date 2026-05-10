@@ -50,16 +50,13 @@ Send a running session to the mobile companion app:
 dd-client mobile-link \
   --url https://agent.example.com \
   --key ~/.config/devopsdefender/noise.key \
-  --id SESSION_ID \
-  --include-key
+  --id SESSION_ID
 ```
 
 Open the printed `devopsdefender://session?...` link on iOS, or render it as a
-QR code with the printed `qrencode` command. `--include-key` puts the Noise
-private key in the handoff URL so the mobile app can import it before loading
-history and following the live transcript; treat that link or QR code as secret.
-Omit `--include-key` to send only the agent URL and session id after the app
-already has the key.
+QR code with the printed `qrencode` command. The link includes the Noise private
+key so the mobile app can import it before loading history and following the
+live transcript; treat that link or QR code as secret.
 
 Quote verification is on by default. Local preview/dev runs without Intel Trust
 Authority credentials must pass `--insecure-skip-quote-verify` explicitly.

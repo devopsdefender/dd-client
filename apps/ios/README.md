@@ -36,29 +36,18 @@ Generate the iOS link:
 cargo run -p dd-client -- mobile-link \
   --url "$AGENT_URL" \
   --key "$HOME/.config/devopsdefender/noise.key" \
-  --id "$SESSION_ID" \
-  --include-key
+  --id "$SESSION_ID"
 ```
 
 Open the printed `devopsdefender://session?...` link on iOS, or render the QR
-with the printed `qrencode` command. With `--include-key`, the link contains the
-Noise private key and the app imports it before loading history and following
-the transcript; treat the link or QR as secret.
-
-## Key Import Fallback
-
-Prefer `--include-key` so the link is self-contained. If you omit it, the app
-can only connect after a key has already been imported into its Application
-Support directory.
-
-```bash
-xxd -p -c 256 "$HOME/.config/devopsdefender/noise.key" | pbcopy
-```
+with the printed `qrencode` command. The link contains the Noise private key and
+the app imports it before loading history and following the transcript; treat
+the link or QR as secret.
 
 ## App Workflow
 
 - Open a `devopsdefender://session?...` link or scan its QR code.
-- The app imports the embedded key when present.
+- The app imports the embedded key.
 - The app loads recent transcript history, then keeps following live output.
 
 The app intentionally does not create sessions, list recipes, browse agents,

@@ -47,9 +47,7 @@ struct MobileLinkArgs {
     #[arg(long)]
     id: String,
     #[arg(long)]
-    key: Option<PathBuf>,
-    #[arg(long)]
-    include_key: bool,
+    key: PathBuf,
 }
 
 #[derive(Args, Clone)]
@@ -133,32 +131,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn print_mobile_link(args: MobileLinkArgs) -> anyhow::Result<()> {
-    let key_hex = if args.include_key {
-        let key = args
-            .key
-            .as_deref()
-            .ok_or_else(|| anyhow!("--key is required with --include-key"))?;
-        Some(load_key_hex(key).await?)
-    } else {
-        None
-    };
-    let link = mobile_session_url(&args.url, &args.id, key_hex.as_deref());
+    let key_hex = load_key_hex(&args.key).await?;
+    let link = mobile_session_url(&args.url, &args.id, &key_hex);
     println!("{link}");
 
-    if let Some(key) = args.key {
-        println!();
-        println!("pubkey: {}", public_key_hex(&key).await?);
-        println!(
-            "key import: xxd -p -c 256 {} | pbcopy",
-            shell_quote_path(&key)
-        );
-    }
+    println!();
+    println!("pubkey: {}", public_key_hex(&args.key).await?);
 
     println!();
-    if args.include_key {
-        println!();
-        println!("warning: this link contains the Noise private key; treat the QR as secret");
-    }
+    println!("warning: this link contains the Noise private key; treat the QR as secret");
 
     println!();
     println!("Open this link on iPhone, or make a QR with:");
@@ -166,17 +147,13 @@ async fn print_mobile_link(args: MobileLinkArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn mobile_session_url(agent_url: &str, session_id: &str, key_hex: Option<&str>) -> String {
-    let mut url = format!(
-        "devopsdefender://session?agent={}&id={}&skip_quote_verify=1",
+fn mobile_session_url(agent_url: &str, session_id: &str, key_hex: &str) -> String {
+    format!(
+        "devopsdefender://session?agent={}&id={}&skip_quote_verify=1&key={}",
         percent_encode(agent_url),
-        percent_encode(session_id)
-    );
-    if let Some(key_hex) = key_hex {
-        url.push_str("&key=");
-        url.push_str(&percent_encode(key_hex));
-    }
-    url
+        percent_encode(session_id),
+        percent_encode(key_hex)
+    )
 }
 
 async fn load_key_hex(path: &Path) -> anyhow::Result<String> {
@@ -200,14 +177,6 @@ fn percent_encode(value: &str) -> String {
         }
     }
     out
-}
-
-fn shell_quote_path(path: &std::path::Path) -> String {
-    shell_quote(&path.to_string_lossy())
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", shell_escape_single(value))
 }
 
 fn shell_escape_single(value: &str) -> String {

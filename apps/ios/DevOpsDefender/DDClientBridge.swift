@@ -15,16 +15,16 @@ struct DDClientError: LocalizedError {
 
 enum DDClientBridge {
     static func importKey(keyPath: String, keyContent: String) throws {
-        _ = try request([
-            "operation": "import_key",
-            "key_path": keyPath,
-            "key_content": keyContent
-        ])
+        let responsePointer = keyPath.withCString { keyPathCString in
+            keyContent.withCString { keyContentCString in
+                dd_client_import_key(keyPathCString, keyContentCString)
+            }
+        }
+        _ = try decodeResponse(responsePointer)
     }
 
     static func transcriptHistory(id: String, settings: AgentSettings) throws -> [String: Any] {
         try request([
-            "operation": "replay_session",
             "agent_url": settings.agentURL,
             "key_path": settings.keyPath,
             "insecure_skip_quote_verify": true,
@@ -34,7 +34,7 @@ enum DDClientBridge {
             "ita_issuer": "",
             "id": id,
             "max_bytes": 32768
-        ])
+        ], using: dd_client_replay_session)
     }
 
     static func startAttachStream(
@@ -50,8 +50,7 @@ enum DDClientBridge {
             "ita_base_url": "",
             "ita_jwks_url": "",
             "ita_issuer": "",
-            "id": id,
-            "tail": true
+            "id": id
         ]
         let data = try JSONSerialization.data(withJSONObject: payload)
         guard let requestJSON = String(data: data, encoding: .utf8) else {
@@ -63,15 +62,22 @@ enum DDClientBridge {
         return stream
     }
 
-    private static func request(_ payload: [String: Any]) throws -> [String: Any] {
+    private static func request(
+        _ payload: [String: Any],
+        using call: (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+    ) throws -> [String: Any] {
         let requestData = try JSONSerialization.data(withJSONObject: payload)
         guard let requestJSON = String(data: requestData, encoding: .utf8) else {
             throw DDClientError(message: "Failed to encode FFI request")
         }
 
         let responsePointer = requestJSON.withCString { requestCString in
-            dd_client_agent_request(requestCString)
+            call(requestCString)
         }
+        return try decodeResponse(responsePointer)
+    }
+
+    private static func decodeResponse(_ responsePointer: UnsafeMutablePointer<CChar>?) throws -> [String: Any] {
         guard let responsePointer else {
             throw DDClientError(message: "Rust FFI returned a null response")
         }
@@ -209,16 +215,12 @@ final class ClientViewModel: ObservableObject {
         transcript = ""
         terminalRenderer = TerminalScreenRenderer(width: 96, maxRows: 160)
 
-        if let key = query["key"], !key.isEmpty {
-            importKeyAndLoadTranscript(key)
+        guard let key = query["key"], !key.isEmpty else {
+            status = "Mobile link missing key"
             return
         }
 
-        if FileManager.default.fileExists(atPath: keyPath.expandingTildePath) {
-            loadTranscript()
-        } else {
-            status = "Linked \(linkedSessionTitle); link did not include key"
-        }
+        importKeyAndLoadTranscript(key)
     }
 
     private func importKeyAndLoadTranscript(_ key: String) {
@@ -231,21 +233,6 @@ final class ClientViewModel: ObservableObject {
         run("Importing key", startStreamAfterInitialLoad: true) {
             try DDClientBridge.importKey(keyPath: path, keyContent: key)
             return initialTranscriptUpdate(id: id, settings: settings)
-        }
-    }
-
-    private func loadTranscript() {
-        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else {
-            status = "No linked session"
-            return
-        }
-        let settings = AgentSettings(
-            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            keyPath: keyPath.expandingTildePath
-        )
-        run("Loading transcript", startStreamAfterInitialLoad: true) {
-            initialTranscriptUpdate(id: id, settings: settings)
         }
     }
 

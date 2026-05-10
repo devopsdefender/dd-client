@@ -30,9 +30,16 @@ static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 static STREAMS: OnceLock<Mutex<HashMap<u64, StreamControl>>> = OnceLock::new();
 
 #[no_mangle]
-pub extern "C" fn dd_client_agent_request(request_json: *const c_char) -> *mut c_char {
-    let result = agent_request_response(request_json);
-    into_c_string(result)
+pub extern "C" fn dd_client_import_key(
+    key_path: *const c_char,
+    key_content: *const c_char,
+) -> *mut c_char {
+    into_c_string(import_key_response(key_path, key_content))
+}
+
+#[no_mangle]
+pub extern "C" fn dd_client_replay_session(request_json: *const c_char) -> *mut c_char {
+    into_c_string(replay_session_response(request_json))
 }
 
 #[no_mangle]
@@ -81,7 +88,6 @@ fn attach_stream_start(
         serde_json::from_str(&request_json).map_err(|e| format!("parse request_json: {e}"))?;
     let opts = connection_options_from_request(&request)?;
     let id = required_json_string(&request, "id")?;
-    let tail = bool_json_field(&request, "tail")?.unwrap_or(true);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let handle = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -102,7 +108,6 @@ fn attach_stream_start(
                         attach_session_stream(
                             conn,
                             &id,
-                            tail,
                             shutdown_rx,
                             || {
                                 emit_stream_event(
@@ -176,8 +181,8 @@ fn streams() -> &'static Mutex<HashMap<u64, StreamControl>> {
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn agent_request_response(request_json: *const c_char) -> serde_json::Value {
-    match agent_request(request_json) {
+fn import_key_response(key_path: *const c_char, key_content: *const c_char) -> serde_json::Value {
+    match import_key(key_path, key_content) {
         Ok(value) => value,
         Err(error) => serde_json::json!({
             "ok": false,
@@ -186,33 +191,12 @@ fn agent_request_response(request_json: *const c_char) -> serde_json::Value {
     }
 }
 
-fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, String> {
-    let request_json = required_c_string(request_json, "request_json")?;
-    let request: serde_json::Value =
-        serde_json::from_str(&request_json).map_err(|e| format!("parse request_json: {e}"))?;
-    let operation = required_json_string(&request, "operation")?;
-
-    match operation.as_str() {
-        "import_key" => import_key_request(&request),
-        "replay_session" => {
-            let opts = connection_options_from_request(&request)?;
-            let id = required_json_string(&request, "id")?;
-            let max_bytes = usize_json_field(&request, "max_bytes")?
-                .unwrap_or(DEFAULT_REPLAY_MAX_BYTES)
-                .min(MAX_REPLAY_BYTES);
-            let value = block_on_ffi_result(move || async move {
-                let mut conn = connect(&opts).await?;
-                replay_session(&mut conn, &id, Some(max_bytes)).await
-            })?;
-            Ok(ok_value("replay_session", value))
-        }
-        _ => Err(format!("unsupported operation: {operation}")),
-    }
-}
-
-fn import_key_request(request: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let key_path = required_json_string(request, "key_path")?;
-    let key_content = required_json_string(request, "key_content")?;
+fn import_key(
+    key_path: *const c_char,
+    key_content: *const c_char,
+) -> Result<serde_json::Value, String> {
+    let key_path = required_c_string(key_path, "key_path")?;
+    let key_content = required_c_string(key_content, "key_content")?;
     let bytes = parse_key_content(&key_content)?;
     persist_key(Path::new(&key_path), &bytes)?;
     Ok(serde_json::json!({
@@ -220,6 +204,32 @@ fn import_key_request(request: &serde_json::Value) -> Result<serde_json::Value, 
         "operation": "import_key",
         "key_path": key_path,
     }))
+}
+
+fn replay_session_response(request_json: *const c_char) -> serde_json::Value {
+    match replay_session_request(request_json) {
+        Ok(value) => value,
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error,
+        }),
+    }
+}
+
+fn replay_session_request(request_json: *const c_char) -> Result<serde_json::Value, String> {
+    let request_json = required_c_string(request_json, "request_json")?;
+    let request: serde_json::Value =
+        serde_json::from_str(&request_json).map_err(|e| format!("parse request_json: {e}"))?;
+    let opts = connection_options_from_request(&request)?;
+    let id = required_json_string(&request, "id")?;
+    let max_bytes = usize_json_field(&request, "max_bytes")?
+        .unwrap_or(DEFAULT_REPLAY_MAX_BYTES)
+        .min(MAX_REPLAY_BYTES);
+    let value = block_on_ffi_result(move || async move {
+        let mut conn = connect(&opts).await?;
+        replay_session(&mut conn, &id, Some(max_bytes)).await
+    })?;
+    Ok(ok_value("replay_session", value))
 }
 
 fn connection_options_from_request(
@@ -423,30 +433,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_request_rejects_unknown_operation() {
-        let request = CString::new(r#"{"operation":"bogus"}"#).unwrap();
-
-        let value = agent_request_response(request.as_ptr());
-
-        assert_eq!(value["ok"], false);
-        assert!(value["error"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported operation"));
-    }
-
-    #[test]
     fn import_key_accepts_hex_content() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("noise.key");
-        let request = CString::new(format!(
-            r#"{{"operation":"import_key","key_path":"{}","key_content":"{}"}}"#,
-            key_path.display(),
-            "07".repeat(32)
-        ))
-        .unwrap();
+        let key_path_c = CString::new(key_path.to_string_lossy().as_ref()).unwrap();
+        let key_content_c = CString::new("07".repeat(32)).unwrap();
 
-        let value = agent_request_response(request.as_ptr());
+        let value = import_key_response(key_path_c.as_ptr(), key_content_c.as_ptr());
 
         assert_eq!(value["ok"], true);
         assert_eq!(std::fs::read(key_path).unwrap(), vec![7u8; 32]);
@@ -455,7 +448,6 @@ mod tests {
     #[test]
     fn connection_options_requires_ita_key_when_verification_enabled() {
         let request: serde_json::Value = serde_json::json!({
-            "operation": "replay_session",
             "agent_url": "https://agent.example.com",
             "key_path": "/tmp/noise.key",
             "insecure_skip_quote_verify": false

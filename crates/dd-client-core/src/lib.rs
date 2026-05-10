@@ -61,7 +61,7 @@ pub struct NoiseConnection {
 }
 
 impl NoiseConnection {
-    pub async fn call(&mut self, request: Value) -> anyhow::Result<Value> {
+    async fn call(&mut self, request: Value) -> anyhow::Result<Value> {
         let plain = serde_json::to_vec(&request)?;
         send_encrypted(&mut self.transport, &mut self.sink, &plain).await?;
         let cipher = next_binary(&mut self.stream)
@@ -148,7 +148,7 @@ pub async fn replay_session(
     conn.call(request).await
 }
 
-pub async fn resize_session(
+async fn resize_session(
     conn: &mut NoiseConnection,
     id: &str,
     cols: u64,
@@ -246,7 +246,6 @@ pub async fn attach_session(
 pub async fn attach_session_stream<F>(
     mut conn: NoiseConnection,
     id: &str,
-    tail: bool,
     mut shutdown: watch::Receiver<bool>,
     mut on_open: impl FnMut() -> anyhow::Result<()> + Send,
     mut on_bytes: F,
@@ -258,7 +257,7 @@ where
         .call(serde_json::json!({
             "method": "shell.attach_session",
             "id": id,
-            "tail": tail,
+            "tail": true,
         }))
         .await?;
     if ack.get("error").is_some() {
@@ -393,7 +392,7 @@ pub fn session_id(value: &Value) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("create response did not include a session id: {value}"))
 }
 
-pub async fn load_or_create_key(path: &Path) -> anyhow::Result<StaticSecret> {
+async fn load_or_create_key(path: &Path) -> anyhow::Result<StaticSecret> {
     match tokio::fs::read(path).await {
         Ok(bytes) if bytes.len() == 32 => {
             let mut key = [0u8; 32];
@@ -415,7 +414,7 @@ pub async fn public_key_hex(path: &Path) -> anyhow::Result<String> {
     Ok(public_hex(&secret))
 }
 
-pub fn public_hex(secret: &StaticSecret) -> String {
+fn public_hex(secret: &StaticSecret) -> String {
     hex::encode(PublicKey::from(secret).as_bytes())
 }
 
@@ -428,11 +427,11 @@ pub fn enrollment_url(cp_url: &str, pubkey_hex: &str, label: &str) -> String {
     )
 }
 
-pub fn health_url(base_url: &str) -> String {
+fn health_url(base_url: &str) -> String {
     format!("{}/health", normalize_http_base(base_url))
 }
 
-pub fn noise_ws_url(base_url: &str) -> String {
+fn noise_ws_url(base_url: &str) -> String {
     let base = normalize_http_base(base_url);
     let ws_base = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}")
