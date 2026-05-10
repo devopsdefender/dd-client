@@ -1,6 +1,27 @@
 #!/bin/sh
 set -eu
 
+# Xcode launched from the GUI does not inherit the user's shell PATH. Make the
+# common Rust/Homebrew locations visible before invoking cargo/rustup.
+if [ -n "${HOME:-}" ]; then
+  PATH="$HOME/.cargo/bin:$PATH"
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: $1 not found while building Rust FFI." >&2
+    echo "hint: install Rust with rustup and ensure $HOME/.cargo/bin exists." >&2
+    echo "hint: current PATH is: $PATH" >&2
+    exit 1
+  fi
+}
+
+require_command cargo
+require_command rustup
+require_command xcrun
+
 if [ -n "${SRCROOT:-}" ]; then
   REPO_ROOT=$(cd "$SRCROOT/../.." && pwd)
 else
