@@ -192,7 +192,18 @@ pub async fn exec(conn: &mut NoiseConnection, request: &ExecRequest) -> anyhow::
     .await
 }
 
-pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Result<()> {
+pub async fn attach_session(
+    mut conn: NoiseConnection,
+    id: &str,
+    resize_opts: Option<ConnectionOptions>,
+) -> anyhow::Result<()> {
+    let initial_size = current_terminal_size();
+    if let Some(size) = initial_size {
+        if let Err(error) = resize_session(&mut conn, id, size.cols, size.rows).await {
+            eprintln!("warning: initial terminal resize failed: {error}");
+        }
+    }
+
     let ack = conn
         .call(serde_json::json!({
             "method": "shell.attach_session",
@@ -207,6 +218,13 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
     eprintln!("attached; Ctrl-] detaches, Ctrl-D sends EOF and disconnects");
 
     let _raw = RawMode::enter()?;
+    let resize_task = resize_opts.map(|opts| {
+        tokio::spawn(resize_on_terminal_change(
+            opts,
+            id.to_string(),
+            initial_size,
+        ))
+    });
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut in_buf = [0u8; ATTACH_CHUNK];
@@ -239,6 +257,9 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
                 stdout.flush().await?;
             }
         }
+    }
+    if let Some(task) = resize_task {
+        task.abort();
     }
     Ok(())
 }
@@ -332,6 +353,85 @@ enum AttachInputAction {
     Forward,
     ForwardThenDisconnect,
     Disconnect,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct TerminalSize {
+    cols: u64,
+    rows: u64,
+}
+
+#[cfg(unix)]
+async fn resize_on_terminal_change(
+    opts: ConnectionOptions,
+    id: String,
+    mut last_size: Option<TerminalSize>,
+) {
+    let mut signals =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()) {
+            Ok(signals) => signals,
+            Err(error) => {
+                eprintln!("warning: could not watch terminal resize events: {error}");
+                return;
+            }
+        };
+
+    while signals.recv().await.is_some() {
+        let Some(size) = current_terminal_size() else {
+            continue;
+        };
+        if Some(size) == last_size {
+            continue;
+        }
+        match connect(&opts).await {
+            Ok(mut conn) => match resize_session(&mut conn, &id, size.cols, size.rows).await {
+                Ok(_) => last_size = Some(size),
+                Err(error) => eprintln!("warning: terminal resize failed: {error}"),
+            },
+            Err(error) => eprintln!("warning: terminal resize connect failed: {error}"),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn resize_on_terminal_change(
+    _opts: ConnectionOptions,
+    _id: String,
+    _last_size: Option<TerminalSize>,
+) {
+}
+
+fn current_terminal_size() -> Option<TerminalSize> {
+    #[cfg(unix)]
+    {
+        terminal_size_for_fd(libc::STDOUT_FILENO)
+            .or_else(|| terminal_size_for_fd(libc::STDIN_FILENO))
+            .or_else(|| terminal_size_for_fd(libc::STDERR_FILENO))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn terminal_size_for_fd(fd: libc::c_int) -> Option<TerminalSize> {
+    if unsafe { libc::isatty(fd) } != 1 {
+        return None;
+    }
+
+    let mut winsize = std::mem::MaybeUninit::<libc::winsize>::uninit();
+    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, winsize.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let winsize = unsafe { winsize.assume_init() };
+    if winsize.ws_col == 0 || winsize.ws_row == 0 {
+        return None;
+    }
+    Some(TerminalSize {
+        cols: winsize.ws_col.into(),
+        rows: winsize.ws_row.into(),
+    })
 }
 
 fn attach_input_action(bytes: &[u8]) -> AttachInputAction {

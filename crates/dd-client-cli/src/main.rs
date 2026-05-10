@@ -172,14 +172,16 @@ async fn main() -> anyhow::Result<()> {
             print_json(close_session(&mut conn, &args.id).await?)?;
         }
         Command::Attach(args) => {
-            let conn = connect(&connection_options(args.connect)?).await?;
-            attach_session(conn, &args.id).await?;
+            let opts = connection_options(args.connect)?;
+            let conn = connect(&opts).await?;
+            attach_session(conn, &args.id, Some(opts)).await?;
         }
         Command::Shell(args) => {
-            let mut conn = connect(&connection_options(args.connect.clone())?).await?;
+            let opts = connection_options(args.connect.clone())?;
+            let mut conn = connect(&opts).await?;
             let session = create_session(&mut conn, &create_request(&args)).await?;
             let id = session_id(&session)?;
-            attach_session(conn, &id).await?;
+            attach_session(conn, &id, Some(opts)).await?;
         }
         Command::Exec(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
