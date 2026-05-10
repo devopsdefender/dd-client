@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/dd-client-core",
+    "crates/dd-client-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/devopsdefender/dd-client"
+
