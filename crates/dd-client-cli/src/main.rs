@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use clap::{Args, Parser, Subcommand};
 use dd_client_core::{
-    attach_session, close_session, connect, create_session, enrollment_url, exec, list_recipes,
-    list_sessions, public_key_hex, replay_session, resize_session, session_id, ConnectionOptions,
-    CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
+    attach_session, close_session, connect, create_session, enrollment_url, list_sessions,
+    public_key_hex, session_id, ConnectionOptions, CreateSessionRequest, IntelTrustAuthority,
+    QuoteVerification,
 };
 
 const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
@@ -23,23 +23,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Keygen(KeygenArgs),
-    Pubkey(KeyOnlyArgs),
     MobileLink(MobileLinkArgs),
-    Recipes(ConnectArgs),
     Sessions(ConnectArgs),
-    Create(CreateArgs),
-    Replay(SessionArgs),
-    Resize(ResizeArgs),
     Close(SessionArgs),
     Attach(SessionArgs),
     Shell(CreateArgs),
-    Exec(ExecArgs),
-}
-
-#[derive(Args)]
-struct KeyOnlyArgs {
-    #[arg(long)]
-    key: PathBuf,
 }
 
 #[derive(Args)]
@@ -100,30 +88,6 @@ struct SessionArgs {
     connect: ConnectArgs,
     #[arg(long)]
     id: String,
-    #[arg(long)]
-    max_bytes: Option<usize>,
-}
-
-#[derive(Args)]
-struct ResizeArgs {
-    #[command(flatten)]
-    connect: ConnectArgs,
-    #[arg(long)]
-    id: String,
-    #[arg(long)]
-    cols: u64,
-    #[arg(long)]
-    rows: u64,
-}
-
-#[derive(Args)]
-struct ExecArgs {
-    #[command(flatten)]
-    connect: ConnectArgs,
-    #[arg(long, default_value_t = 60)]
-    timeout: u64,
-    #[arg(last = true, required = true)]
-    cmd: Vec<String>,
 }
 
 #[tokio::main]
@@ -141,31 +105,12 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", enrollment_url(cp_url, &pubkey, label));
             }
         }
-        Command::Pubkey(args) => {
-            println!("{}", public_key_hex(&args.key).await?);
-        }
         Command::MobileLink(args) => {
             print_mobile_link(args).await?;
-        }
-        Command::Recipes(args) => {
-            let mut conn = connect(&connection_options(args)?).await?;
-            print_json(list_recipes(&mut conn).await?)?;
         }
         Command::Sessions(args) => {
             let mut conn = connect(&connection_options(args)?).await?;
             print_json(list_sessions(&mut conn).await?)?;
-        }
-        Command::Create(args) => {
-            let mut conn = connect(&connection_options(args.connect.clone())?).await?;
-            print_json(create_session(&mut conn, &create_request(&args)).await?)?;
-        }
-        Command::Replay(args) => {
-            let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(replay_session(&mut conn, &args.id, args.max_bytes).await?)?;
-        }
-        Command::Resize(args) => {
-            let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(resize_session(&mut conn, &args.id, args.cols, args.rows).await?)?;
         }
         Command::Close(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
@@ -182,19 +127,6 @@ async fn main() -> anyhow::Result<()> {
             let session = create_session(&mut conn, &create_request(&args)).await?;
             let id = session_id(&session)?;
             attach_session(conn, &id, Some(opts)).await?;
-        }
-        Command::Exec(args) => {
-            let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(
-                exec(
-                    &mut conn,
-                    &ExecRequest {
-                        cmd: args.cmd,
-                        timeout_secs: args.timeout,
-                    },
-                )
-                .await?,
-            )?;
         }
     }
     Ok(())

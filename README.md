@@ -8,8 +8,8 @@ This repo owns client-side code that should not live in
 - `dd-client-core`: reusable Rust client core for pairing, quote verification,
   direct agent Noise transport, session RPCs, and PTY streaming.
 - `dd-client`: CLI binary using `dd-client-core`.
-- `dd-client-ffi`: C-compatible bridge for native mobile shells.
-- `apps/ios`: iOS client workspace notes; it will use the same core.
+- `dd-client-ffi`: C-compatible bridge for mobile transcript viewing.
+- `apps/ios`: iOS companion that opens desktop-generated session links.
 
 The control plane is only for enrollment and route discovery. Shell, log, and
 session bytes go directly between the paired client and the selected agent over
@@ -29,14 +29,6 @@ Generate a paired device key and print the CP enrollment URL:
 dd-client keygen --key ~/.config/devopsdefender/noise.key \
   --cp-url https://app.devopsdefender.com \
   --label laptop
-```
-
-List recipes on an enrolled agent:
-
-```bash
-DD_ITA_API_KEY=... dd-client recipes \
-  --url https://agent.example.com \
-  --key ~/.config/devopsdefender/noise.key
 ```
 
 Open a shell:

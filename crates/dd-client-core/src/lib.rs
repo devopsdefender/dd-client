@@ -12,7 +12,6 @@ use snow::{Builder, TransportState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
-use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -53,12 +52,6 @@ pub struct CreateSessionRequest {
     pub recipe: Option<String>,
     pub name: Option<String>,
     pub command: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExecRequest {
-    pub cmd: Vec<String>,
-    pub timeout_secs: u64,
 }
 
 pub struct NoiseConnection {
@@ -113,11 +106,6 @@ pub async fn connect(opts: &ConnectionOptions) -> anyhow::Result<NoiseConnection
         sink,
         stream,
     })
-}
-
-pub async fn list_recipes(conn: &mut NoiseConnection) -> anyhow::Result<Value> {
-    conn.call(serde_json::json!({"method": "shell.list_recipes"}))
-        .await
 }
 
 pub async fn list_sessions(conn: &mut NoiseConnection) -> anyhow::Result<Value> {
@@ -179,15 +167,6 @@ pub async fn close_session(conn: &mut NoiseConnection, id: &str) -> anyhow::Resu
     conn.call(serde_json::json!({
         "method": "shell.close_session",
         "id": id,
-    }))
-    .await
-}
-
-pub async fn exec(conn: &mut NoiseConnection, request: &ExecRequest) -> anyhow::Result<Value> {
-    conn.call(serde_json::json!({
-        "method": "exec",
-        "cmd": request.cmd,
-        "timeout_secs": request.timeout_secs,
     }))
     .await
 }
@@ -262,46 +241,6 @@ pub async fn attach_session(
         task.abort();
     }
     Ok(())
-}
-
-pub async fn attach_session_exchange(
-    mut conn: NoiseConnection,
-    id: &str,
-    input: &[u8],
-    max_bytes: usize,
-    idle_timeout: Duration,
-) -> anyhow::Result<Vec<u8>> {
-    let ack = conn
-        .call(serde_json::json!({
-            "method": "shell.attach_session",
-            "id": id,
-            "tail": true,
-        }))
-        .await?;
-    if ack.get("error").is_some() {
-        anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
-    }
-
-    if !input.is_empty() {
-        send_encrypted(&mut conn.transport, &mut conn.sink, input).await?;
-    }
-
-    let mut output = Vec::new();
-    while output.len() < max_bytes {
-        let frame = match timeout(idle_timeout, next_binary(&mut conn.stream)).await {
-            Ok(frame) => frame?,
-            Err(_) => break,
-        };
-        let Some(cipher) = frame else {
-            break;
-        };
-        let mut plain = vec![0u8; cipher.len()];
-        let n = conn.transport.read_message(&cipher, &mut plain)?;
-        let remaining = max_bytes - output.len();
-        output.extend_from_slice(&plain[..n.min(remaining)]);
-    }
-
-    Ok(output)
 }
 
 pub async fn attach_session_stream<F>(

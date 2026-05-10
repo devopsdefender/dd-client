@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
 
 use base64::Engine as _;
 use dd_client_core::{
-    attach_session_exchange, attach_session_stream, connect, create_session, list_recipes,
-    list_sessions, replay_session, session_id, ConnectionOptions, CreateSessionRequest,
-    IntelTrustAuthority, QuoteVerification,
+    attach_session_stream, connect, replay_session, ConnectionOptions, IntelTrustAuthority,
+    QuoteVerification,
 };
 use std::collections::HashMap;
 use tokio::sync::watch;
@@ -19,9 +17,6 @@ use tokio::sync::watch;
 const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
 const DEFAULT_ITA_JWKS_URL: &str = "https://portal.trustauthority.intel.com/certs";
 const DEFAULT_ITA_ISSUER: &str = "https://portal.trustauthority.intel.com";
-const DEFAULT_ATTACH_MAX_BYTES: usize = 128 * 1024;
-const MAX_ATTACH_BYTES: usize = 1024 * 1024;
-const DEFAULT_ATTACH_IDLE_TIMEOUT_MS: u64 = 1200;
 const DEFAULT_REPLAY_MAX_BYTES: usize = 32 * 1024;
 const MAX_REPLAY_BYTES: usize = 32 * 1024;
 
@@ -33,16 +28,6 @@ struct StreamControl {
 
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 static STREAMS: OnceLock<Mutex<HashMap<u64, StreamControl>>> = OnceLock::new();
-
-#[no_mangle]
-pub extern "C" fn dd_client_keygen(
-    key_path: *const c_char,
-    cp_url: *const c_char,
-    label: *const c_char,
-) -> *mut c_char {
-    let result = keygen_response(key_path, cp_url, label);
-    into_c_string(result)
-}
 
 #[no_mangle]
 pub extern "C" fn dd_client_agent_request(request_json: *const c_char) -> *mut c_char {
@@ -191,48 +176,6 @@ fn streams() -> &'static Mutex<HashMap<u64, StreamControl>> {
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn keygen_response(
-    key_path: *const c_char,
-    cp_url: *const c_char,
-    label: *const c_char,
-) -> serde_json::Value {
-    match keygen(key_path, cp_url, label) {
-        Ok(value) => value,
-        Err(error) => serde_json::json!({
-            "ok": false,
-            "error": error,
-        }),
-    }
-}
-
-fn keygen(
-    key_path: *const c_char,
-    cp_url: *const c_char,
-    label: *const c_char,
-) -> Result<serde_json::Value, String> {
-    let key_path = required_c_string(key_path, "key_path")?;
-    let cp_url = optional_c_string(cp_url)?;
-    let label = optional_c_string(label)?;
-
-    let key_path = PathBuf::from(key_path);
-    let pubkey_hex =
-        block_on_ffi_result(
-            move || async move { dd_client_core::public_key_hex(&key_path).await },
-        )?;
-    let enrollment_url = match (cp_url.as_deref(), label.as_deref()) {
-        (Some(cp_url), Some(label)) => {
-            Some(dd_client_core::enrollment_url(cp_url, &pubkey_hex, label))
-        }
-        _ => None,
-    };
-
-    Ok(serde_json::json!({
-        "ok": true,
-        "pubkey_hex": pubkey_hex,
-        "enrollment_url": enrollment_url,
-    }))
-}
-
 fn agent_request_response(request_json: *const c_char) -> serde_json::Value {
     match agent_request(request_json) {
         Ok(value) => value,
@@ -251,40 +194,6 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
 
     match operation.as_str() {
         "import_key" => import_key_request(&request),
-        "recipes" | "list_recipes" => {
-            let opts = connection_options_from_request(&request)?;
-            let value = block_on_ffi_result(move || async move {
-                let mut conn = connect(&opts).await?;
-                list_recipes(&mut conn).await
-            })?;
-            Ok(ok_value("recipes", value))
-        }
-        "sessions" | "list_sessions" => {
-            let opts = connection_options_from_request(&request)?;
-            let value = block_on_ffi_result(move || async move {
-                let mut conn = connect(&opts).await?;
-                list_sessions(&mut conn).await
-            })?;
-            Ok(ok_value("sessions", value))
-        }
-        "create_session" => {
-            let opts = connection_options_from_request(&request)?;
-            let create_request = CreateSessionRequest {
-                recipe: optional_json_string(&request, "recipe")?,
-                name: optional_json_string(&request, "name")?,
-                command: optional_json_string(&request, "command")?,
-            };
-            let value = block_on_ffi_result(move || async move {
-                let mut conn = connect(&opts).await?;
-                create_session(&mut conn, &create_request).await
-            })?;
-            let mut response = ok_map("create_session");
-            if let Ok(id) = session_id(&value) {
-                response.insert("session_id".to_string(), serde_json::Value::String(id));
-            }
-            response.insert("value".to_string(), value);
-            Ok(serde_json::Value::Object(response))
-        }
         "replay_session" => {
             let opts = connection_options_from_request(&request)?;
             let id = required_json_string(&request, "id")?;
@@ -296,42 +205,6 @@ fn agent_request(request_json: *const c_char) -> Result<serde_json::Value, Strin
                 replay_session(&mut conn, &id, Some(max_bytes)).await
             })?;
             Ok(ok_value("replay_session", value))
-        }
-        "attach_exchange" | "attach_snapshot" => {
-            let opts = connection_options_from_request(&request)?;
-            let id = required_json_string(&request, "id")?;
-            let input = optional_json_string(&request, "input")?.unwrap_or_default();
-            let max_bytes = usize_json_field(&request, "max_bytes")?
-                .unwrap_or(DEFAULT_ATTACH_MAX_BYTES)
-                .min(MAX_ATTACH_BYTES);
-            let idle_timeout_ms = u64_json_field(&request, "idle_timeout_ms")?
-                .unwrap_or(DEFAULT_ATTACH_IDLE_TIMEOUT_MS)
-                .clamp(100, 10_000);
-            let bytes = block_on_ffi_result(move || async move {
-                let conn = connect(&opts).await?;
-                attach_session_exchange(
-                    conn,
-                    &id,
-                    input.as_bytes(),
-                    max_bytes,
-                    Duration::from_millis(idle_timeout_ms),
-                )
-                .await
-            })?;
-            let mut response = ok_map("attach_exchange");
-            response.insert(
-                "text".to_string(),
-                serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned()),
-            );
-            response.insert(
-                "bytes_base64".to_string(),
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes)),
-            );
-            response.insert(
-                "truncated".to_string(),
-                serde_json::Value::Bool(bytes.len() >= max_bytes),
-            );
-            Ok(serde_json::Value::Object(response))
         }
         _ => Err(format!("unsupported operation: {operation}")),
     }
@@ -550,34 +423,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keygen_returns_enrollment_url() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path =
-            CString::new(dir.path().join("noise.key").to_string_lossy().as_ref()).unwrap();
-        let cp_url = CString::new("https://cp.example.com").unwrap();
-        let label = CString::new("ios phone").unwrap();
-
-        let value = keygen_response(key_path.as_ptr(), cp_url.as_ptr(), label.as_ptr());
-
-        assert_eq!(value["ok"], true);
-        assert!(value["pubkey_hex"].as_str().unwrap().len() == 64);
-        assert_eq!(
-            value["enrollment_url"],
-            "https://cp.example.com/admin/enroll?pubkey=".to_string()
-                + value["pubkey_hex"].as_str().unwrap()
-                + "&label=ios%20phone"
-        );
-    }
-
-    #[test]
-    fn keygen_rejects_missing_key_path() {
-        let value = keygen_response(std::ptr::null(), std::ptr::null(), std::ptr::null());
-
-        assert_eq!(value["ok"], false);
-        assert!(value["error"].as_str().unwrap().contains("key_path"));
-    }
-
-    #[test]
     fn agent_request_rejects_unknown_operation() {
         let request = CString::new(r#"{"operation":"bogus"}"#).unwrap();
 
@@ -610,7 +455,7 @@ mod tests {
     #[test]
     fn connection_options_requires_ita_key_when_verification_enabled() {
         let request: serde_json::Value = serde_json::json!({
-            "operation": "recipes",
+            "operation": "replay_session",
             "agent_url": "https://agent.example.com",
             "key_path": "/tmp/noise.key",
             "insecure_skip_quote_verify": false

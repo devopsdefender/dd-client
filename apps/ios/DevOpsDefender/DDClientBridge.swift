@@ -22,23 +22,6 @@ enum DDClientBridge {
         ])
     }
 
-    static func transcriptSnapshot(id: String, settings: AgentSettings) throws -> [String: Any] {
-        try request([
-            "operation": "attach_exchange",
-            "agent_url": settings.agentURL,
-            "key_path": settings.keyPath,
-            "insecure_skip_quote_verify": true,
-            "ita_api_key": "",
-            "ita_base_url": "",
-            "ita_jwks_url": "",
-            "ita_issuer": "",
-            "id": id,
-            "input": "",
-            "max_bytes": 131072,
-            "idle_timeout_ms": 250
-        ])
-    }
-
     static func transcriptHistory(id: String, settings: AgentSettings) throws -> [String: Any] {
         try request([
             "operation": "replay_session",
@@ -367,14 +350,6 @@ private func parseAttachStreamEvent(_ eventJSON: String) -> AttachStreamEvent {
     return AttachStreamEvent(type: type, data: payload, message: message)
 }
 
-private func transcriptUpdate(id: String, settings: AgentSettings) throws -> ClientUpdate {
-    let response = try DDClientBridge.transcriptSnapshot(id: id, settings: settings)
-    return ClientUpdate(
-        status: "Loaded \(id)",
-        terminalText: transcriptText(from: response)
-    )
-}
-
 private func initialTranscriptUpdate(id: String, settings: AgentSettings) -> ClientUpdate {
     if let response = try? DDClientBridge.transcriptHistory(id: id, settings: settings) {
         let history = historyText(from: response)
@@ -382,8 +357,7 @@ private func initialTranscriptUpdate(id: String, settings: AgentSettings) -> Cli
             return ClientUpdate(status: "Loaded \(id)", terminalText: history)
         }
     }
-    return (try? transcriptUpdate(id: id, settings: settings))
-        ?? ClientUpdate(status: "Loaded \(id)", terminalText: "")
+    return ClientUpdate(status: "Loaded \(id)", terminalText: "")
 }
 
 private func transcriptText(from value: Any?) -> String {
