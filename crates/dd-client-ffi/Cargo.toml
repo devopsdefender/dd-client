@@ -9,10 +9,11 @@ repository.workspace = true
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
+base64 = "0.22"
 dd-client-core = { path = "../dd-client-core" }
+hex = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "rt"] }
 
 [dev-dependencies]
 tempfile = "3"
-

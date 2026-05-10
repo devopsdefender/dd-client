@@ -11,6 +11,7 @@ use serde_json::Value;
 use snow::{Builder, TransportState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -232,6 +233,46 @@ pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Resu
         }
     }
     Ok(())
+}
+
+pub async fn attach_session_exchange(
+    mut conn: NoiseConnection,
+    id: &str,
+    input: &[u8],
+    max_bytes: usize,
+    idle_timeout: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let ack = conn
+        .call(serde_json::json!({
+            "method": "shell.attach_session",
+            "id": id,
+            "tail": true,
+        }))
+        .await?;
+    if ack.get("error").is_some() {
+        anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
+    }
+
+    if !input.is_empty() {
+        send_encrypted(&mut conn.transport, &mut conn.sink, input).await?;
+    }
+
+    let mut output = Vec::new();
+    while output.len() < max_bytes {
+        let frame = match timeout(idle_timeout, next_binary(&mut conn.stream)).await {
+            Ok(frame) => frame?,
+            Err(_) => break,
+        };
+        let Some(cipher) = frame else {
+            break;
+        };
+        let mut plain = vec![0u8; cipher.len()];
+        let n = conn.transport.read_message(&cipher, &mut plain)?;
+        let remaining = max_bytes - output.len();
+        output.extend_from_slice(&plain[..n.min(remaining)]);
+    }
+
+    Ok(output)
 }
 
 #[derive(Debug, Eq, PartialEq)]

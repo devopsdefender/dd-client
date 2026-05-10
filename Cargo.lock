@@ -377,7 +377,9 @@ dependencies = [
 name = "dd-client-ffi"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "dd-client-core",
+ "hex",
  "serde_json",
  "tempfile",
  "tokio",

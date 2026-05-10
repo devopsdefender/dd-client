@@ -12,6 +12,10 @@ targets:
     platform: iOS
     sources:
       - DevOpsDefender
+    preBuildScripts:
+      - name: Build Rust FFI
+        script: Scripts/build-rust.sh
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.devopsdefender.client
@@ -20,4 +24,13 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
         SUPPORTS_MACCATALYST: NO
         INFOPLIST_FILE: DevOpsDefender/Info.plist
-
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_OBJC_BRIDGING_HEADER: DevOpsDefender/DDClientFFI.h
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(TARGET_TEMP_DIR)/rust"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-ldd_client_ffi"
+          - "-framework"
+          - "Security"
