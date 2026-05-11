@@ -12,7 +12,7 @@ use serde_json::Value;
 use snow::{Builder, TransportState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -253,6 +253,7 @@ pub async fn attach_session_stream<F>(
     mut conn: NoiseConnection,
     id: &str,
     mut shutdown: watch::Receiver<bool>,
+    mut input: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     mut on_open: impl FnMut() -> anyhow::Result<()> + Send,
     mut on_bytes: F,
 ) -> anyhow::Result<()>
@@ -281,6 +282,21 @@ where
                 if changed.is_err() || *shutdown.borrow() {
                     break;
                 }
+            }
+            maybe_bytes = async {
+                match input.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(bytes) = maybe_bytes else {
+                    input = None;
+                    continue;
+                };
+                if bytes.is_empty() {
+                    continue;
+                }
+                send_encrypted(&mut conn.transport, &mut conn.sink, &bytes).await?;
             }
             frame = next_binary(&mut conn.stream) => {
                 let Some(cipher) = frame? else {

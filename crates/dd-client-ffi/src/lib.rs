@@ -12,7 +12,8 @@ use dd_client_core::{
     QuoteVerification,
 };
 use std::collections::HashMap;
-use tokio::sync::watch;
+use std::slice;
+use tokio::sync::{mpsc, watch};
 
 const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
 const DEFAULT_ITA_JWKS_URL: &str = "https://portal.trustauthority.intel.com/certs";
@@ -24,6 +25,7 @@ type StreamCallback = extern "C" fn(u64, *const c_char, *mut c_void);
 
 struct StreamControl {
     shutdown: watch::Sender<bool>,
+    input: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
@@ -68,6 +70,29 @@ pub extern "C" fn dd_client_attach_stream_stop(handle: u64) {
 #[no_mangle]
 /// # Safety
 ///
+/// `bytes` must point to a buffer of at least `len` bytes. Pass a null
+/// pointer with `len == 0` to send an empty payload (no-op).
+pub unsafe extern "C" fn dd_client_attach_stream_send(
+    handle: u64,
+    bytes: *const u8,
+    len: usize,
+) -> bool {
+    if handle == 0 || len == 0 || bytes.is_null() {
+        return false;
+    }
+    let payload = unsafe { slice::from_raw_parts(bytes, len) }.to_vec();
+    let Ok(map) = streams().lock() else {
+        return false;
+    };
+    match map.get(&handle) {
+        Some(control) => control.input.send(payload).is_ok(),
+        None => false,
+    }
+}
+
+#[no_mangle]
+/// # Safety
+///
 /// `value` must be a pointer returned by this library, and it must not have
 /// already been freed.
 pub unsafe extern "C" fn dd_client_string_free(value: *mut c_char) {
@@ -89,12 +114,19 @@ fn attach_stream_start(
     let opts = connection_options_from_request(&request)?;
     let id = required_json_string(&request, "id")?;
     let (shutdown, shutdown_rx) = watch::channel(false);
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let handle = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
 
     streams()
         .lock()
         .map_err(|_| "stream registry lock poisoned".to_string())?
-        .insert(handle, StreamControl { shutdown });
+        .insert(
+            handle,
+            StreamControl {
+                shutdown,
+                input: input_tx,
+            },
+        );
 
     let context_addr = context as usize;
     let worker = thread::Builder::new()
@@ -109,6 +141,7 @@ fn attach_stream_start(
                             conn,
                             &id,
                             shutdown_rx,
+                            Some(input_rx),
                             || {
                                 emit_stream_event(
                                     callback,
