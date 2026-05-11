@@ -40,12 +40,6 @@ struct FleetAPIClient {
     }
 
     func agents() async throws -> [AgentSummary] {
-        #if DEBUG_FAKE_FLEET
-        return [
-            AgentSummary(id: "fake-a", label: "Laptop · macbook-pro", agentURL: "https://agent-a.example.com", lastSeenAt: Date()),
-            AgentSummary(id: "fake-b", label: "Workstation · linux-dev", agentURL: "https://agent-b.example.com", lastSeenAt: Date(timeIntervalSinceNow: -3600))
-        ]
-        #else
         guard let token = keychain.string(for: .bearerToken), !token.isEmpty else {
             throw FleetError.missingToken
         }
@@ -78,6 +72,5 @@ struct FleetAPIClient {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw FleetError.http(http.statusCode, body)
         }
-        #endif
     }
 }

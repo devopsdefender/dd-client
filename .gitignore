@@ -6,3 +6,4 @@ apps/ios/DevOpsDefender.xcodeproj/
 apps/ios/Config/Signing.local.xcconfig
 apps/ios/com.apple.DeveloperTools/
 apps/ios/err
+.claude/
