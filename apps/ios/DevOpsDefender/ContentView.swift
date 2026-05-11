@@ -26,10 +26,13 @@ struct ContentView: View {
         ZStack(alignment: .top) {
             Palette.background.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                statusBar
-                transcriptArea
-                KeyboardSurface(viewModel: viewModel, activeSheet: $activeSheet)
+            switch viewModel.appMode {
+            case .chooser:
+                LaunchView(viewModel: viewModel)
+            case .fleet:
+                AgentListView(viewModel: viewModel)
+            case .session:
+                sessionView
             }
         }
         .sheet(item: $activeSheet) { sheet in
@@ -66,11 +69,32 @@ struct ContentView: View {
         }
     }
 
+    /// The existing session UI (status bar + transcript + keyboard).
+    /// Kept as a subview so the top-level `body` can switch between it
+    /// and the fleet/launch screens.
+    private var sessionView: some View {
+        VStack(spacing: 0) {
+            statusBar
+            transcriptArea
+            KeyboardSurface(viewModel: viewModel, activeSheet: $activeSheet)
+        }
+    }
+
     // MARK: - Status bar
 
     private var statusBar: some View {
         VStack(spacing: 4) {
             HStack(spacing: 10) {
+                Button {
+                    viewModel.returnToChooser()
+                } label: {
+                    Image(systemName: "chevron.backward.circle")
+                        .font(.callout)
+                        .foregroundStyle(Palette.muted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back to home")
+
                 Circle()
                     .fill(statusDotColor)
                     .frame(width: 8, height: 8)

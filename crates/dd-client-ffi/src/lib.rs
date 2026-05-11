@@ -8,8 +8,8 @@ use std::thread;
 
 use base64::Engine as _;
 use dd_client_core::{
-    attach_session_stream, connect, replay_session, ConnectionOptions, IntelTrustAuthority,
-    QuoteVerification,
+    attach_session_stream, connect, list_sessions, public_key_hex, replay_session,
+    ConnectionOptions, IntelTrustAuthority, QuoteVerification,
 };
 use std::collections::HashMap;
 use std::slice;
@@ -42,6 +42,16 @@ pub extern "C" fn dd_client_import_key(
 #[no_mangle]
 pub extern "C" fn dd_client_replay_session(request_json: *const c_char) -> *mut c_char {
     into_c_string(replay_session_response(request_json))
+}
+
+#[no_mangle]
+pub extern "C" fn dd_client_ensure_key(key_path: *const c_char) -> *mut c_char {
+    into_c_string(ensure_key_response(key_path))
+}
+
+#[no_mangle]
+pub extern "C" fn dd_client_list_sessions(request_json: *const c_char) -> *mut c_char {
+    into_c_string(list_sessions_response(request_json))
 }
 
 #[no_mangle]
@@ -247,6 +257,50 @@ fn replay_session_response(request_json: *const c_char) -> serde_json::Value {
             "error": error,
         }),
     }
+}
+
+fn ensure_key_response(key_path: *const c_char) -> serde_json::Value {
+    match ensure_key_request(key_path) {
+        Ok(value) => value,
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error,
+        }),
+    }
+}
+
+fn ensure_key_request(key_path: *const c_char) -> Result<serde_json::Value, String> {
+    let key_path = required_c_string(key_path, "key_path")?;
+    let path = PathBuf::from(&key_path);
+    let pubkey = block_on_ffi_result(move || async move { public_key_hex(&path).await })?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "operation": "ensure_key",
+        "key_path": key_path,
+        "pubkey_hex": pubkey,
+    }))
+}
+
+fn list_sessions_response(request_json: *const c_char) -> serde_json::Value {
+    match list_sessions_request(request_json) {
+        Ok(value) => value,
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error,
+        }),
+    }
+}
+
+fn list_sessions_request(request_json: *const c_char) -> Result<serde_json::Value, String> {
+    let request_json = required_c_string(request_json, "request_json")?;
+    let request: serde_json::Value =
+        serde_json::from_str(&request_json).map_err(|e| format!("parse request_json: {e}"))?;
+    let opts = connection_options_from_request(&request)?;
+    let value = block_on_ffi_result(move || async move {
+        let mut conn = connect(&opts).await?;
+        list_sessions(&mut conn).await
+    })?;
+    Ok(ok_value("list_sessions", value))
 }
 
 fn replay_session_request(request_json: *const c_char) -> Result<serde_json::Value, String> {

@@ -12,7 +12,9 @@ extern "C" {
 typedef void (*dd_client_stream_callback)(uint64_t handle, const char *event_json, void *context);
 
 char *dd_client_import_key(const char *key_path, const char *key_content);
+char *dd_client_ensure_key(const char *key_path);
 char *dd_client_replay_session(const char *request_json);
+char *dd_client_list_sessions(const char *request_json);
 uint64_t dd_client_attach_stream_start(const char *request_json, dd_client_stream_callback callback, void *context);
 void dd_client_attach_stream_stop(uint64_t handle);
 bool dd_client_attach_stream_send(uint64_t handle, const uint8_t *bytes, size_t len);

@@ -38,6 +38,18 @@ enum DDClientBridge {
         ], using: dd_client_replay_session)
     }
 
+    static func listSessions(settings: AgentSettings) throws -> [String: Any] {
+        try request([
+            "agent_url": settings.agentURL,
+            "key_path": settings.keyPath,
+            "insecure_skip_quote_verify": true,
+            "ita_api_key": "",
+            "ita_base_url": "",
+            "ita_jwks_url": "",
+            "ita_issuer": ""
+        ], using: dd_client_list_sessions)
+    }
+
     static func startAttachStream(
         id: String,
         settings: AgentSettings,
@@ -182,8 +194,15 @@ enum AppDefaults {
     }
 }
 
+enum AppMode: Equatable {
+    case chooser
+    case fleet
+    case session
+}
+
 @MainActor
 final class ClientViewModel: ObservableObject {
+    @Published var appMode: AppMode = .chooser
     @Published var selectedSessionID = ""
     @Published var transcript = ""
     @Published var attributedTranscript = AttributedString("")
@@ -232,6 +251,87 @@ final class ClientViewModel: ObservableObject {
         cancelScheduledReconnect()
         reconnectAttempts = 0
         startAttachStream()
+    }
+
+    /// Switch to the fleet flow. Called from the LaunchView's
+    /// "Sign in with GitHub" button.
+    func enterFleet() {
+        appMode = .fleet
+    }
+
+    /// Return to the launch chooser. Called when sign-out happens or
+    /// the user explicitly backs out of a session.
+    func returnToChooser() {
+        attachStream?.stop()
+        attachStream = nil
+        isStreamConnected = false
+        stopIdleTick()
+        cancelScheduledReconnect()
+        reconnectAttempts = 0
+        selectedSessionID = ""
+        agentURL = ""
+        transcript = ""
+        attributedTranscript = AttributedString("")
+        detection = .empty
+        titles = []
+        sentHistory = []
+        inputDraft = ""
+        status = "Open a session link or sign in with GitHub"
+        appMode = .chooser
+    }
+
+    /// Wipe the CP-issued bearer token and return to the chooser.
+    func signOutOfFleet(keychain: KeychainStore = KeychainStore()) {
+        keychain.reset()
+        returnToChooser()
+    }
+
+    /// Begin a session that was picked from the fleet flow. Uses the
+    /// iOS device's own Noise key (`AppKeyStore`), not the mobile-link
+    /// imported key.
+    func attachToFleetSession(agentURL: String, sessionID: String) {
+        let id = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agent = agentURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !agent.isEmpty else {
+            status = "Missing agent or session"
+            return
+        }
+        attachStream?.stop()
+        attachStream = nil
+        isStreamConnected = false
+        stopIdleTick()
+        cancelScheduledReconnect()
+        reconnectAttempts = 0
+
+        self.agentURL = agent
+        self.selectedSessionID = id
+        self.keyPath = AppKeyStore.shared.keyPath
+        self.transcript = ""
+        self.attributedTranscript = AttributedString("")
+        self.detection = .empty
+        self.titles = []
+        self.sentHistory = []
+        self.inputDraft = ""
+        self.lastSendError = nil
+        self.terminalRenderer = TerminalScreenRenderer(width: 96, maxRows: 160)
+        self.oscSniffer.reset()
+        self.oscEvents = []
+        self.titleClassifier.reset()
+        self.keyboardMode = .disconnected
+        self.appMode = .session
+
+        loadFleetTranscript()
+    }
+
+    private func loadFleetTranscript() {
+        let id = selectedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settings = AgentSettings(
+            agentURL: agentURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPath: keyPath.expandingTildePath
+        )
+        run("Loading \(id)", startStreamAfterInitialLoad: true) {
+            initialTranscriptUpdate(id: id, settings: settings)
+        }
     }
 
     var linkedSessionTitle: String {
@@ -284,6 +384,7 @@ final class ClientViewModel: ObservableObject {
         titles = []
         keyboardMode = .disconnected
         sentHistory = []
+        appMode = .session
 
         guard let key = query["key"], !key.isEmpty else {
             status = "Mobile link missing key"
