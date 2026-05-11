@@ -75,14 +75,18 @@ final class OAuthService: NSObject {
 }
 
 extension OAuthService: ASWebAuthenticationPresentationContextProviding {
+    /// ASWebAuthenticationSession calls this delegate on the main thread.
+    /// Using `DispatchQueue.main.sync` here deadlocks (re-entrant wait on
+    /// the same queue) — that's the EXC_BREAKPOINT we hit. Use
+    /// `MainActor.assumeIsolated` to access main-actor-isolated UIKit
+    /// state without an async hop.
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        // The session presentation needs a UIWindow on iOS.
-        DispatchQueue.main.sync {
-            UIApplication.shared.connectedScenes
+        MainActor.assumeIsolated {
+            let keyWindow = UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
                 .flatMap { $0.windows }
                 .first { $0.isKeyWindow }
-                ?? UIWindow()
+            return keyWindow ?? ASPresentationAnchor()
         }
     }
 }
