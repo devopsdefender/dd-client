@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use clap::{Args, Parser, Subcommand};
 use dd_client_core::{
-    attach_session, close_session, connect, create_session, enrollment_url, exec, list_recipes,
-    list_sessions, public_key_hex, replay_session, resize_session, session_id, ConnectionOptions,
+    close_session, connect, create_session, enrollment_url, exec, list_recipes, list_sessions,
+    public_key_hex, replay_session, resize_session, session_id, ConnectionOptions,
     CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
 };
+use dd_client_session::ViewMode;
 
-const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
+mod session_ui;
+
 const DEFAULT_ITA_JWKS_URL: &str = "https://portal.trustauthority.intel.com/certs";
 const DEFAULT_ITA_ISSUER: &str = "https://portal.trustauthority.intel.com";
 
@@ -31,6 +33,7 @@ enum Command {
     Resize(ResizeArgs),
     Close(SessionArgs),
     Attach(SessionArgs),
+    Watch(SessionArgs),
     Shell(CreateArgs),
     Exec(ExecArgs),
 }
@@ -59,14 +62,13 @@ struct ConnectArgs {
     key: PathBuf,
     #[arg(long)]
     insecure_skip_quote_verify: bool,
-    #[arg(long, env = "DD_ITA_API_KEY")]
-    ita_api_key: Option<String>,
-    #[arg(long, env = "DD_ITA_BASE_URL", default_value = DEFAULT_ITA_BASE_URL)]
-    ita_base_url: String,
     #[arg(long, env = "DD_ITA_JWKS_URL", default_value = DEFAULT_ITA_JWKS_URL)]
     ita_jwks_url: String,
     #[arg(long, env = "DD_ITA_ISSUER", default_value = DEFAULT_ITA_ISSUER)]
     ita_issuer: String,
+    /// Structured deriver: "floor" (any TUI) or "claude" (Claude Code stream-json).
+    #[arg(long, default_value = "floor")]
+    adapter: String,
 }
 
 #[derive(Args)]
@@ -154,14 +156,21 @@ async fn main() -> anyhow::Result<()> {
             print_json(close_session(&mut conn, &args.id).await?)?;
         }
         Command::Attach(args) => {
+            let adapter = args.connect.adapter.clone();
             let conn = connect(&connection_options(args.connect)?).await?;
-            attach_session(conn, &args.id).await?;
+            session_ui::run(conn, &args.id, ViewMode::Watch, &adapter).await?;
+        }
+        Command::Watch(args) => {
+            let adapter = args.connect.adapter.clone();
+            let conn = connect(&connection_options(args.connect)?).await?;
+            session_ui::run(conn, &args.id, ViewMode::Watch, &adapter).await?;
         }
         Command::Shell(args) => {
+            let adapter = args.connect.adapter.clone();
             let mut conn = connect(&connection_options(args.connect.clone())?).await?;
             let session = create_session(&mut conn, &create_request(&args)).await?;
             let id = session_id(&session)?;
-            attach_session(conn, &id).await?;
+            session_ui::run(conn, &id, ViewMode::Watch, &adapter).await?;
         }
         Command::Exec(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
@@ -193,10 +202,6 @@ fn connection_options(args: ConnectArgs) -> anyhow::Result<ConnectionOptions> {
         QuoteVerification::InsecureSkip
     } else {
         QuoteVerification::IntelTrustAuthority(IntelTrustAuthority {
-            api_key: args
-                .ita_api_key
-                .context("DD_ITA_API_KEY or --ita-api-key is required")?,
-            base_url: args.ita_base_url,
             jwks_url: args.ita_jwks_url,
             issuer: args.ita_issuer,
         })
