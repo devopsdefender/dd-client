@@ -28,6 +28,12 @@ pub struct IntelTrustAuthority {
     /// the agent mints the token; the client just checks the signature.
     pub jwks_url: String,
     pub issuer: String,
+    /// Expected MRTDs (lowercase hex), any-of. Empty = measurement unpinned
+    /// (verifies genuineness but not *which code* — warns). Pin to a value from a
+    /// source independent of the agent (committed pin / signed release manifest).
+    pub expected_mrtds: Vec<String>,
+    /// Required TCB status when pinned (e.g. "UpToDate").
+    pub expected_tcb: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -391,7 +397,34 @@ async fn verify_quote_binding(
         .report_data
         .as_deref()
         .ok_or_else(|| anyhow!("ITA token missing attester_held_data/report_data"))?;
-    verify_report_data(report_data, pubkey)
+    verify_report_data(report_data, pubkey)?;
+    verify_measurement(&claims, config)
+}
+
+/// Pin the enclave measurement: attestation proves a genuine TDX VM, but only
+/// matching the MRTD proves it's running *our* code. Unpinned ⇒ warn (don't fail).
+fn verify_measurement(claims: &ita::Claims, config: &IntelTrustAuthority) -> anyhow::Result<()> {
+    if config.expected_mrtds.is_empty() {
+        eprintln!(
+            "warning: agent measurement is unpinned (no --expected-mrtd); attestation proves a \
+             genuine TDX enclave but not which code it runs"
+        );
+        return Ok(());
+    }
+    let mrtd = claims.mrtd.as_deref().unwrap_or("").to_lowercase();
+    if !config.expected_mrtds.contains(&mrtd) {
+        anyhow::bail!(
+            "agent MRTD {} not in expected allowlist",
+            if mrtd.is_empty() { "<none>" } else { &mrtd }
+        );
+    }
+    if let Some(want) = &config.expected_tcb {
+        let got = claims.tcb_status.as_deref().unwrap_or("");
+        if got != want {
+            anyhow::bail!("agent TCB status {got:?} != expected {want:?}");
+        }
+    }
+    Ok(())
 }
 
 fn verify_report_data(report_data: &str, pubkey: &[u8; 32]) -> anyhow::Result<()> {
@@ -516,5 +549,35 @@ mod tests {
         let pubkey = [9u8; 32];
         let encoded = base64::engine::general_purpose::STANDARD.encode(report);
         verify_report_data(&encoded, &pubkey).unwrap();
+    }
+
+    fn ita_config(mrtds: &[&str], tcb: Option<&str>) -> IntelTrustAuthority {
+        IntelTrustAuthority {
+            jwks_url: String::new(),
+            issuer: String::new(),
+            expected_mrtds: mrtds.iter().map(|s| s.to_string()).collect(),
+            expected_tcb: tcb.map(String::from),
+        }
+    }
+
+    fn claims(mrtd: &str, tcb: &str) -> ita::Claims {
+        ita::Claims {
+            mrtd: Some(mrtd.into()),
+            tcb_status: Some(tcb.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn measurement_unpinned_warns_but_passes() {
+        assert!(verify_measurement(&claims("aa", "OutOfDate"), &ita_config(&[], None)).is_ok());
+    }
+
+    #[test]
+    fn measurement_pinned_accepts_match_rejects_others() {
+        let cfg = ita_config(&["aa", "bb"], Some("UpToDate"));
+        assert!(verify_measurement(&claims("bb", "UpToDate"), &cfg).is_ok());
+        assert!(verify_measurement(&claims("cc", "UpToDate"), &cfg).is_err()); // wrong mrtd
+        assert!(verify_measurement(&claims("aa", "OutOfDate"), &cfg).is_err()); // bad tcb
     }
 }

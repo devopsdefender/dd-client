@@ -66,6 +66,17 @@ struct ConnectArgs {
     ita_jwks_url: String,
     #[arg(long, env = "DD_ITA_ISSUER", default_value = DEFAULT_ITA_ISSUER)]
     ita_issuer: String,
+    /// Pin the agent measurement: accepted MRTD(s), hex (repeatable / comma-sep).
+    /// Unset = unpinned (warns). Source this from a trusted pin, not the agent.
+    #[arg(
+        long = "expected-mrtd",
+        env = "DD_EXPECTED_MRTD",
+        value_delimiter = ','
+    )]
+    expected_mrtd: Vec<String>,
+    /// Required TCB status when an MRTD is pinned (e.g. "UpToDate").
+    #[arg(long, env = "DD_EXPECTED_TCB")]
+    expected_tcb: Option<String>,
     /// Structured deriver: "floor" (any TUI) or "claude" (Claude Code stream-json).
     #[arg(long, default_value = "floor")]
     adapter: String,
@@ -210,6 +221,13 @@ fn connection_options(args: ConnectArgs) -> anyhow::Result<ConnectionOptions> {
         QuoteVerification::IntelTrustAuthority(IntelTrustAuthority {
             jwks_url: args.ita_jwks_url,
             issuer: args.ita_issuer,
+            expected_mrtds: args
+                .expected_mrtd
+                .iter()
+                .map(|m| m.trim().to_lowercase())
+                .filter(|m| !m.is_empty())
+                .collect(),
+            expected_tcb: args.expected_tcb,
         })
     };
     Ok(ConnectionOptions {

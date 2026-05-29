@@ -215,7 +215,14 @@ impl SessionHandle {
         let quote_verification = if insecure_skip_quote_verify {
             QuoteVerification::InsecureSkip
         } else {
-            QuoteVerification::IntelTrustAuthority(IntelTrustAuthority { jwks_url, issuer })
+            QuoteVerification::IntelTrustAuthority(IntelTrustAuthority {
+                jwks_url,
+                issuer,
+                // Measurement pinning on mobile is a follow-up (needs a trusted
+                // pin source); unpinned for now (warns, still verifies genuineness).
+                expected_mrtds: Vec::new(),
+                expected_tcb: None,
+            })
         };
         let opts = ConnectionOptions {
             agent_url,
