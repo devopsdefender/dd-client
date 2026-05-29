@@ -4,8 +4,8 @@ use anyhow::anyhow;
 use clap::{Args, Parser, Subcommand};
 use dd_client_core::{
     close_session, connect, create_session, enrollment_url, exec, list_recipes, list_sessions,
-    public_key_hex, replay_session, resize_session, session_id, ConnectionOptions,
-    CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
+    load_or_create_key, public_key_hex, replay_session, resize_session, session_id,
+    ConnectionOptions, CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
 };
 use dd_client_session::ViewMode;
 
@@ -144,8 +144,14 @@ async fn main() -> anyhow::Result<()> {
             print_json(create_session(&mut conn, &create_request(&args)).await?)?;
         }
         Command::Replay(args) => {
+            // Decrypt history client-side with the device key: the enclave seals
+            // each record to paired device pubkeys and cannot read it back.
+            let secret = load_or_create_key(&args.connect.key).await?;
             let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(replay_session(&mut conn, &args.id).await?)?;
+            let response = replay_session(&mut conn, &args.id).await?;
+            let bytes = dd_client_session::history::decrypt_replay(&secret, &response)?;
+            use std::io::Write;
+            std::io::stdout().write_all(&bytes)?;
         }
         Command::Resize(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;

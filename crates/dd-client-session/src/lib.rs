@@ -13,6 +13,7 @@
 pub mod block;
 pub mod derive;
 pub mod engine;
+pub mod history;
 pub mod input;
 pub mod mode;
 pub mod stream;
