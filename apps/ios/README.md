@@ -2,25 +2,52 @@
 
 The iOS client should be a native SwiftUI app backed by the Rust client core.
 
-Initial split:
+Split:
 
 - SwiftUI owns screens, navigation, notifications, Keychain access, and iOS
   lifecycle.
-- `dd-client-core` owns protocol behavior: pairing keys, quote verification,
-  direct agent Noise transport, session RPCs, and PTY bytes.
-- `dd-client-ffi` exposes a C-compatible bridge that can be linked into an
-  Xcode target as a static library.
+- `dd-client-session` owns interpretation: blocks, the floor/agent derivers,
+  view modes, and history decryption — shared verbatim with the CLI.
+- `dd-client-core` owns protocol behavior: pairing keys, quote verification
+  (verify-only, no Intel account), Noise transport, session RPCs, PTY bytes.
+- `dd-client-ffi` exposes all of the above over **UniFFI** (Swift + Kotlin
+  generated from one Rust surface) — no hand-written C.
 
-First screen to build:
+The app is a renderer for the structured chat document the engine produces:
+`SessionHandle.blocks()` returns typed `FfiBlock`s, a `BlockObserver` fires on
+change, and `setMode`/`sendText` drive Watch ⇄ Interact ⇄ Raw. No protocol,
+crypto, or terminal-interpretation logic lives in Swift. See `SessionModel.swift`
+and `ContentView.swift`.
 
-1. Generate or load a device key from Keychain-backed storage.
-2. Display the public key and CP enrollment URL.
-3. Open the enrollment URL in an authenticated browser session.
-4. After enrollment, list routed agents and connect directly to the selected
-   agent over Noise.
+## Generating the UniFFI bindings
 
-The iOS app should not embed a browser shell or PWA. It should be a native
-client using the same core as the CLI.
+The Swift in this folder references types (`SessionHandle`, `FfiBlock`,
+`FfiMode`, `keygen`, …) emitted by UniFFI. Generate them before building:
+
+```bash
+# from the repo root
+cargo build -p dd-client-ffi --release
+cargo run -p dd-client-ffi --bin uniffi-bindgen -- generate \
+  --library target/release/libdd_client_ffi.dylib \
+  --language swift --out-dir apps/ios/Generated
+```
+
+Then add `apps/ios/Generated/*.swift` to the target and link the Rust static
+library as an `xcframework` (build `aarch64-apple-ios` + the simulator/macABI
+triples and `xcodebuild -create-xcframework`). The generated `*.modulemap`
+header path is wired via the xcframework.
+
+> The Rust FFI crate is compile/clippy/test-verified on Linux. The binding
+> generation and the iOS build require the Apple toolchain (Xcode), which isn't
+> available in CI here — run the steps above on macOS.
+
+First-run flow:
+
+1. Generate or load the device key (`keygen`), Keychain-backed.
+2. Show the pubkey + CP enrollment URL; enroll in an authenticated browser.
+3. After enrollment, attach to a session and render its block document.
+
+The iOS app does not embed a browser shell or PWA.
 
 macOS testing target:
 
