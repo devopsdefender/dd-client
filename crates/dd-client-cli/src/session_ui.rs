@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use dd_client_core::NoiseConnection;
 use dd_client_session::block::Block as SBlock;
-use dd_client_session::derive::ClaudeCodeAdapter;
+use dd_client_session::derive::{ClaudeCodeAdapter, ScreenSnapshot};
 use dd_client_session::input::{ChordParser, RawAction};
 use dd_client_session::transport::{self, Outbound};
 use dd_client_session::{SessionEngine, ViewMode};
@@ -141,9 +141,18 @@ async fn run_structured(
             None
         };
 
-        if let Err(e) =
-            terminal.draw(|f| draw(f, current, &blocks, menu.as_ref(), &mut scroll, follow))
-        {
+        let screen = engine.screen_snapshot();
+        if let Err(e) = terminal.draw(|f| {
+            draw(
+                f,
+                current,
+                &blocks,
+                &screen,
+                menu.as_ref(),
+                &mut scroll,
+                follow,
+            )
+        }) {
             break Err(e.into());
         }
 
@@ -317,10 +326,12 @@ fn key_to_bytes(k: &KeyEvent) -> Option<Vec<u8>> {
 
 // ── Rendering ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw(
     f: &mut Frame,
     mode: ViewMode,
     blocks: &[SBlock],
+    screen: &ScreenSnapshot,
     menu: Option<&dd_client_session::block::Menu>,
     scroll: &mut u16,
     follow: bool,
@@ -335,11 +346,21 @@ fn draw(
     .split(area);
     let body: Rect = rows[0];
 
-    let text = render_blocks(blocks);
+    // Full-screen (alt-screen) apps like Codex paint a grid with absolute cursor
+    // moves; the line-oriented floor mangles them. Render the faithful vt100 grid
+    // instead. Plain scrolling output keeps the structured block view.
+    let on_screen = screen.alternate;
+    let text = if on_screen {
+        render_screen(screen)
+    } else {
+        render_blocks(blocks)
+    };
     let total = text.lines.len() as u16;
     let inner_h = body.height.saturating_sub(2);
     let max_scroll = total.saturating_sub(inner_h);
-    if follow || *scroll > max_scroll {
+    if on_screen {
+        *scroll = 0; // the grid is the viewport — no scrollback
+    } else if follow || *scroll > max_scroll {
         *scroll = max_scroll;
     }
 
@@ -348,7 +369,8 @@ fn draw(
     } else {
         "controlled"
     };
-    let title = format!(" {} ({integrity}) — {total} lines ", mode.label());
+    let kind = if on_screen { "screen" } else { "blocks" };
+    let title = format!(" {} ({integrity}) — {kind}, {total} lines ", mode.label());
     let para = Paragraph::new(text)
         .wrap(Wrap { trim: false })
         .scroll((*scroll, 0))
@@ -396,6 +418,31 @@ fn render_menu(menu: &dd_client_session::block::Menu) -> Paragraph<'static> {
             .title(" menu (arrows/enter) ")
             .border_style(Style::default().fg(Color::Yellow)),
     )
+}
+
+/// Render the vt100 grid faithfully — preserves the column spacing alt-screen
+/// TUIs depend on. Reverse-video cells (selected menu rows) keep their highlight.
+fn render_screen(screen: &ScreenSnapshot) -> Text<'static> {
+    let last = screen
+        .rows
+        .iter()
+        .rposition(|r| !r.text.trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let lines = screen.rows[..last]
+        .iter()
+        .map(|r| {
+            if r.inverse {
+                Line::styled(
+                    r.text.clone(),
+                    Style::default().add_modifier(Modifier::REVERSED),
+                )
+            } else {
+                Line::raw(r.text.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+    Text::from(lines)
 }
 
 fn render_blocks(blocks: &[SBlock]) -> Text<'static> {
