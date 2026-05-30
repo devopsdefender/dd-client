@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use clap::{Args, Parser, Subcommand};
 use dd_client_core::{
-    attach_session, close_session, connect, create_session, enrollment_url, exec, list_recipes,
-    list_sessions, public_key_hex, replay_session, resize_session, session_id, ConnectionOptions,
-    CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
+    close_session, connect, create_session, enrollment_url, exec, list_recipes, list_sessions,
+    load_or_create_key, public_key_hex, replay_session, resize_session, session_id,
+    ConnectionOptions, CreateSessionRequest, ExecRequest, IntelTrustAuthority, QuoteVerification,
 };
+use dd_client_session::ViewMode;
 
-const DEFAULT_ITA_BASE_URL: &str = "https://api.trustauthority.intel.com";
+mod session_ui;
+
 const DEFAULT_ITA_JWKS_URL: &str = "https://portal.trustauthority.intel.com/certs";
 const DEFAULT_ITA_ISSUER: &str = "https://portal.trustauthority.intel.com";
 
@@ -31,6 +33,7 @@ enum Command {
     Resize(ResizeArgs),
     Close(SessionArgs),
     Attach(SessionArgs),
+    Watch(SessionArgs),
     Shell(CreateArgs),
     Exec(ExecArgs),
 }
@@ -59,14 +62,24 @@ struct ConnectArgs {
     key: PathBuf,
     #[arg(long)]
     insecure_skip_quote_verify: bool,
-    #[arg(long, env = "DD_ITA_API_KEY")]
-    ita_api_key: Option<String>,
-    #[arg(long, env = "DD_ITA_BASE_URL", default_value = DEFAULT_ITA_BASE_URL)]
-    ita_base_url: String,
     #[arg(long, env = "DD_ITA_JWKS_URL", default_value = DEFAULT_ITA_JWKS_URL)]
     ita_jwks_url: String,
     #[arg(long, env = "DD_ITA_ISSUER", default_value = DEFAULT_ITA_ISSUER)]
     ita_issuer: String,
+    /// Pin the agent measurement: accepted MRTD(s), hex (repeatable / comma-sep).
+    /// Unset = unpinned (warns). Source this from a trusted pin, not the agent.
+    #[arg(
+        long = "expected-mrtd",
+        env = "DD_EXPECTED_MRTD",
+        value_delimiter = ','
+    )]
+    expected_mrtd: Vec<String>,
+    /// Required TCB status when an MRTD is pinned (e.g. "UpToDate").
+    #[arg(long, env = "DD_EXPECTED_TCB")]
+    expected_tcb: Option<String>,
+    /// Structured deriver: "floor" (any TUI) or "claude" (Claude Code stream-json).
+    #[arg(long, default_value = "floor")]
+    adapter: String,
 }
 
 #[derive(Args)]
@@ -142,8 +155,14 @@ async fn main() -> anyhow::Result<()> {
             print_json(create_session(&mut conn, &create_request(&args)).await?)?;
         }
         Command::Replay(args) => {
+            // Decrypt history client-side with the device key: the enclave seals
+            // each record to paired device pubkeys and cannot read it back.
+            let secret = load_or_create_key(&args.connect.key).await?;
             let mut conn = connect(&connection_options(args.connect)?).await?;
-            print_json(replay_session(&mut conn, &args.id).await?)?;
+            let response = replay_session(&mut conn, &args.id).await?;
+            let bytes = dd_client_session::history::decrypt_replay(&secret, &response)?;
+            use std::io::Write;
+            std::io::stdout().write_all(&bytes)?;
         }
         Command::Resize(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
@@ -154,14 +173,21 @@ async fn main() -> anyhow::Result<()> {
             print_json(close_session(&mut conn, &args.id).await?)?;
         }
         Command::Attach(args) => {
+            let adapter = args.connect.adapter.clone();
             let conn = connect(&connection_options(args.connect)?).await?;
-            attach_session(conn, &args.id).await?;
+            session_ui::run(conn, &args.id, ViewMode::Watch, &adapter).await?;
+        }
+        Command::Watch(args) => {
+            let adapter = args.connect.adapter.clone();
+            let conn = connect(&connection_options(args.connect)?).await?;
+            session_ui::run(conn, &args.id, ViewMode::Watch, &adapter).await?;
         }
         Command::Shell(args) => {
+            let adapter = args.connect.adapter.clone();
             let mut conn = connect(&connection_options(args.connect.clone())?).await?;
             let session = create_session(&mut conn, &create_request(&args)).await?;
             let id = session_id(&session)?;
-            attach_session(conn, &id).await?;
+            session_ui::run(conn, &id, ViewMode::Watch, &adapter).await?;
         }
         Command::Exec(args) => {
             let mut conn = connect(&connection_options(args.connect)?).await?;
@@ -193,12 +219,15 @@ fn connection_options(args: ConnectArgs) -> anyhow::Result<ConnectionOptions> {
         QuoteVerification::InsecureSkip
     } else {
         QuoteVerification::IntelTrustAuthority(IntelTrustAuthority {
-            api_key: args
-                .ita_api_key
-                .context("DD_ITA_API_KEY or --ita-api-key is required")?,
-            base_url: args.ita_base_url,
             jwks_url: args.ita_jwks_url,
             issuer: args.ita_issuer,
+            expected_mrtds: args
+                .expected_mrtd
+                .iter()
+                .map(|m| m.trim().to_lowercase())
+                .filter(|m| !m.is_empty())
+                .collect(),
+            expected_tcb: args.expected_tcb,
         })
     };
     Ok(ConnectionOptions {

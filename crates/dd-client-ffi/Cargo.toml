@@ -9,10 +9,17 @@ repository.workspace = true
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
+anyhow = "1"
 dd-client-core = { path = "../dd-client-core" }
+dd-client-session = { path = "../dd-client-session" }
 serde_json = "1"
-tokio = { version = "1", features = ["fs", "rt"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "sync", "macros"] }
+uniffi = { version = "0.28", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
 
 [dev-dependencies]
 tempfile = "3"
-

@@ -1,6 +1,7 @@
 mod ita;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
 use base64::Engine as _;
@@ -9,7 +10,6 @@ use rand::rngs::OsRng;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use snow::{Builder, TransportState};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -17,9 +17,6 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_NOISE_MSG: usize = 65535;
-const ATTACH_CHUNK: usize = 4096;
-const CTRL_D: u8 = 0x04;
-const CTRL_RIGHT_BRACKET: u8 = 0x1d;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = futures_util::stream::SplitSink<WsStream, WsMessage>;
@@ -27,10 +24,16 @@ type WsRead = futures_util::stream::SplitStream<WsStream>;
 
 #[derive(Debug, Clone)]
 pub struct IntelTrustAuthority {
-    pub api_key: String,
-    pub base_url: String,
+    /// Intel's public JWKS endpoint. Verification only — no API key, no account:
+    /// the agent mints the token; the client just checks the signature.
     pub jwks_url: String,
     pub issuer: String,
+    /// Expected MRTDs (lowercase hex), any-of. Empty = measurement unpinned
+    /// (verifies genuineness but not *which code* — warns). Pin to a value from a
+    /// source independent of the agent (committed pin / signed release manifest).
+    pub expected_mrtds: Vec<String>,
+    /// Required TCB status when pinned (e.g. "UpToDate").
+    pub expected_tcb: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +79,77 @@ impl NoiseConnection {
         let n = self.transport.read_message(&cipher, &mut out)?;
         out.truncate(n);
         Ok(serde_json::from_slice(&out)?)
+    }
+
+    /// Split into independently-ownable write/read halves so a caller can run a
+    /// duplex pump loop (e.g. the session engine forwarding keystrokes while
+    /// streaming PTY output). The Noise transport (encryption) stays inside core,
+    /// shared between the halves behind a brief, non-async lock — the lock is
+    /// never held across an `.await`.
+    pub fn split(self) -> (NoiseWriter, NoiseReader) {
+        let transport = Arc::new(Mutex::new(self.transport));
+        (
+            NoiseWriter {
+                transport: transport.clone(),
+                sink: self.sink,
+            },
+            NoiseReader {
+                transport,
+                stream: self.stream,
+            },
+        )
+    }
+}
+
+/// Write half of a split [`NoiseConnection`]. Encrypts plaintext into Noise
+/// transport frames and sends them.
+pub struct NoiseWriter {
+    transport: Arc<Mutex<TransportState>>,
+    sink: WsSink,
+}
+
+impl NoiseWriter {
+    /// Encrypt `plain` and send it as one Noise transport frame.
+    pub async fn send(&mut self, plain: &[u8]) -> anyhow::Result<()> {
+        let frame = {
+            let mut transport = self
+                .transport
+                .lock()
+                .map_err(|_| anyhow!("noise transport lock poisoned"))?;
+            let mut cipher = vec![0u8; plain.len() + 16];
+            let n = transport.write_message(plain, &mut cipher)?;
+            cipher.truncate(n);
+            cipher
+        };
+        self.sink.send(WsMessage::Binary(frame.into())).await?;
+        Ok(())
+    }
+}
+
+/// Read half of a split [`NoiseConnection`]. Receives Noise transport frames and
+/// decrypts them.
+pub struct NoiseReader {
+    transport: Arc<Mutex<TransportState>>,
+    stream: WsRead,
+}
+
+impl NoiseReader {
+    /// Receive and decrypt the next Noise transport frame. `Ok(None)` once the
+    /// socket closes.
+    pub async fn recv(&mut self) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some(cipher) = next_binary(&mut self.stream).await? else {
+            return Ok(None);
+        };
+        let mut plain = vec![0u8; cipher.len()];
+        let n = {
+            let mut transport = self
+                .transport
+                .lock()
+                .map_err(|_| anyhow!("noise transport lock poisoned"))?;
+            transport.read_message(&cipher, &mut plain)?
+        };
+        plain.truncate(n);
+        Ok(Some(plain))
     }
 }
 
@@ -183,75 +257,18 @@ pub async fn exec(conn: &mut NoiseConnection, request: &ExecRequest) -> anyhow::
     .await
 }
 
-pub async fn attach_session(mut conn: NoiseConnection, id: &str) -> anyhow::Result<()> {
-    let ack = conn
-        .call(serde_json::json!({
-            "method": "shell.attach_session",
-            "id": id,
-            "tail": true,
-        }))
-        .await?;
-    if ack.get("error").is_some() {
-        anyhow::bail!("attach failed: {}", serde_json::to_string(&ack)?);
-    }
-
-    eprintln!("attached; Ctrl-] detaches, Ctrl-D sends EOF and disconnects");
-
-    let _raw = RawMode::enter()?;
-    let mut stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut in_buf = [0u8; ATTACH_CHUNK];
-
-    loop {
-        tokio::select! {
-            n = stdin.read(&mut in_buf) => {
-                let n = n?;
-                if n == 0 {
-                    break;
-                }
-                match attach_input_action(&in_buf[..n]) {
-                    AttachInputAction::Forward => {
-                        send_encrypted(&mut conn.transport, &mut conn.sink, &in_buf[..n]).await?;
-                    }
-                    AttachInputAction::ForwardThenDisconnect => {
-                        send_encrypted(&mut conn.transport, &mut conn.sink, &in_buf[..n]).await?;
-                        break;
-                    }
-                    AttachInputAction::Disconnect => break,
-                }
-            }
-            frame = next_binary(&mut conn.stream) => {
-                let Some(cipher) = frame? else {
-                    break;
-                };
-                let mut plain = vec![0u8; cipher.len()];
-                let n = conn.transport.read_message(&cipher, &mut plain)?;
-                stdout.write_all(&plain[..n]).await?;
-                stdout.flush().await?;
-            }
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum AttachInputAction {
-    Forward,
-    ForwardThenDisconnect,
-    Disconnect,
-}
-
-fn attach_input_action(bytes: &[u8]) -> AttachInputAction {
-    match bytes {
-        [CTRL_D] => AttachInputAction::ForwardThenDisconnect,
-        [CTRL_RIGHT_BRACKET] => AttachInputAction::Disconnect,
-        _ => AttachInputAction::Forward,
-    }
-}
-
 pub fn session_id(value: &Value) -> anyhow::Result<String> {
     if let Some(error) = value.get("error") {
-        anyhow::bail!("create failed: {error}");
+        // The Noise gateway wraps upstream failures as {error, detail}; the detail
+        // carries the real cause (e.g. "unknown recipe: codex"). Surface both.
+        let msg = error
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| error.to_string());
+        match value.get("detail").and_then(Value::as_str) {
+            Some(detail) => anyhow::bail!("create failed: {msg}: {detail}"),
+            None => anyhow::bail!("create failed: {msg}"),
+        }
     }
     value
         .get("id")
@@ -346,10 +363,10 @@ async fn fetch_and_verify_server_pubkey(
         .pointer("/noise/pubkey_hex")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("{url} did not include noise.pubkey_hex"))?;
-    let quote_b64 = body
-        .pointer("/noise/quote_b64")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("{url} did not include noise.quote_b64"))?;
+    // The agent mints an ITA appraisal of its Noise quote and serves it here; the
+    // client only verifies it (public JWKS — no account). Optional so the
+    // InsecureSkip path and older agents still work.
+    let ita_token = body.pointer("/noise/ita_token").and_then(Value::as_str);
     let bytes = hex::decode(pubkey_hex).context("decode noise.pubkey_hex")?;
     if bytes.len() != 32 {
         anyhow::bail!(
@@ -359,13 +376,13 @@ async fn fetch_and_verify_server_pubkey(
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
-    verify_quote_binding(http, quote_b64, &out, &opts.quote_verification).await?;
+    verify_quote_binding(http, ita_token, &out, &opts.quote_verification).await?;
     Ok(out)
 }
 
 async fn verify_quote_binding(
     http: &HttpClient,
-    quote_b64: &str,
+    ita_token: Option<&str>,
     pubkey: &[u8; 32],
     verification: &QuoteVerification,
 ) -> anyhow::Result<()> {
@@ -374,19 +391,49 @@ async fn verify_quote_binding(
         return Ok(());
     };
 
-    let token = ita::mint(http, &config.base_url, &config.api_key, quote_b64)
-        .await
-        .map_err(|e| anyhow!("ITA quote appraisal failed: {e}"))?;
+    let token = ita_token.ok_or_else(|| {
+        anyhow!(
+            "agent /health did not include noise.ita_token; update the agent or \
+             pass --insecure-skip-quote-verify"
+        )
+    })?;
     let verifier = ita::Verifier::new(http.clone(), config.jwks_url.clone(), config.issuer.clone());
     let claims = verifier
-        .verify(&token)
+        .verify(token)
         .await
         .map_err(|e| anyhow!("ITA token verification failed: {e}"))?;
     let report_data = claims
         .report_data
         .as_deref()
         .ok_or_else(|| anyhow!("ITA token missing attester_held_data/report_data"))?;
-    verify_report_data(report_data, pubkey)
+    verify_report_data(report_data, pubkey)?;
+    verify_measurement(&claims, config)
+}
+
+/// Pin the enclave measurement: attestation proves a genuine TDX VM, but only
+/// matching the MRTD proves it's running *our* code. Unpinned ⇒ warn (don't fail).
+fn verify_measurement(claims: &ita::Claims, config: &IntelTrustAuthority) -> anyhow::Result<()> {
+    if config.expected_mrtds.is_empty() {
+        eprintln!(
+            "warning: agent measurement is unpinned (no --expected-mrtd); attestation proves a \
+             genuine TDX enclave but not which code it runs"
+        );
+        return Ok(());
+    }
+    let mrtd = claims.mrtd.as_deref().unwrap_or("").to_lowercase();
+    if !config.expected_mrtds.contains(&mrtd) {
+        anyhow::bail!(
+            "agent MRTD {} not in expected allowlist",
+            if mrtd.is_empty() { "<none>" } else { &mrtd }
+        );
+    }
+    if let Some(want) = &config.expected_tcb {
+        let got = claims.tcb_status.as_deref().unwrap_or("");
+        if got != want {
+            anyhow::bail!("agent TCB status {got:?} != expected {want:?}");
+        }
+    }
+    Ok(())
 }
 
 fn verify_report_data(report_data: &str, pubkey: &[u8; 32]) -> anyhow::Result<()> {
@@ -452,48 +499,6 @@ fn normalize_http_base(base_url: &str) -> String {
     }
 }
 
-struct RawMode {
-    #[cfg(unix)]
-    original: Option<libc::termios>,
-}
-
-impl RawMode {
-    fn enter() -> anyhow::Result<Self> {
-        #[cfg(unix)]
-        {
-            if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
-                return Ok(Self { original: None });
-            }
-            let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
-            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, original.as_mut_ptr()) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("tcgetattr");
-            }
-            let original = unsafe { original.assume_init() };
-            let mut raw = original;
-            unsafe { libc::cfmakeraw(&mut raw) };
-            if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("tcsetattr raw");
-            }
-            Ok(Self {
-                original: Some(original),
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            Ok(Self {})
-        }
-    }
-}
-
-impl Drop for RawMode {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(original) = &self.original {
-            let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,24 +560,33 @@ mod tests {
         verify_report_data(&encoded, &pubkey).unwrap();
     }
 
-    #[test]
-    fn attach_input_detaches_on_ctrl_right_bracket() {
-        assert_eq!(
-            attach_input_action(&[CTRL_RIGHT_BRACKET]),
-            AttachInputAction::Disconnect
-        );
+    fn ita_config(mrtds: &[&str], tcb: Option<&str>) -> IntelTrustAuthority {
+        IntelTrustAuthority {
+            jwks_url: String::new(),
+            issuer: String::new(),
+            expected_mrtds: mrtds.iter().map(|s| s.to_string()).collect(),
+            expected_tcb: tcb.map(String::from),
+        }
+    }
+
+    fn claims(mrtd: &str, tcb: &str) -> ita::Claims {
+        ita::Claims {
+            mrtd: Some(mrtd.into()),
+            tcb_status: Some(tcb.into()),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn attach_input_sends_eof_then_disconnects_on_ctrl_d() {
-        assert_eq!(
-            attach_input_action(&[CTRL_D]),
-            AttachInputAction::ForwardThenDisconnect
-        );
+    fn measurement_unpinned_warns_but_passes() {
+        assert!(verify_measurement(&claims("aa", "OutOfDate"), &ita_config(&[], None)).is_ok());
     }
 
     #[test]
-    fn attach_input_forwards_regular_bytes() {
-        assert_eq!(attach_input_action(b"exit\n"), AttachInputAction::Forward);
+    fn measurement_pinned_accepts_match_rejects_others() {
+        let cfg = ita_config(&["aa", "bb"], Some("UpToDate"));
+        assert!(verify_measurement(&claims("bb", "UpToDate"), &cfg).is_ok());
+        assert!(verify_measurement(&claims("cc", "UpToDate"), &cfg).is_err()); // wrong mrtd
+        assert!(verify_measurement(&claims("aa", "OutOfDate"), &cfg).is_err()); // bad tcb
     }
 }

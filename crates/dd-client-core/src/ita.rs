@@ -49,44 +49,12 @@ impl Claims {
             attester_type: get("attester_type"),
             mrtd: get("tdx_mrtd"),
             mrsigner: get("tdx_mrsigner"),
-            report_data: get("attester_held_data"),
+            // Intel TDX tokens carry the quote's report_data as `tdx_report_data`;
+            // `attester_held_data` only appears if held-data was submitted at mint.
+            report_data: get("attester_held_data").or_else(|| get("tdx_report_data")),
             extra: v,
         }
     }
-}
-
-#[derive(Serialize)]
-struct MintRequest<'a> {
-    quote: &'a str,
-}
-
-#[derive(Deserialize)]
-struct MintResponse {
-    token: String,
-}
-
-pub async fn mint(
-    http: &Client,
-    base_url: &str,
-    api_key: &str,
-    quote_b64: &str,
-) -> anyhow::Result<String> {
-    let url = format!("{}/appraisal/v1/attest", base_url.trim_end_matches('/'));
-    let resp = http
-        .post(&url)
-        .header("x-api-key", api_key)
-        .header("Accept", "application/json")
-        .json(&MintRequest { quote: quote_b64 })
-        .send()
-        .await
-        .with_context(|| format!("ITA mint {url}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("ITA mint {status}: {body}");
-    }
-    let body: MintResponse = resp.json().await?;
-    Ok(body.token)
 }
 
 pub struct Verifier {

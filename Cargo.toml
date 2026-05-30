@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dd-client-core",
+    "crates/dd-client-session",
     "crates/dd-client-cli",
     "crates/dd-client-ffi",
 ]
