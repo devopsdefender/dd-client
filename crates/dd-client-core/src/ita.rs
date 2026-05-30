@@ -49,7 +49,9 @@ impl Claims {
             attester_type: get("attester_type"),
             mrtd: get("tdx_mrtd"),
             mrsigner: get("tdx_mrsigner"),
-            report_data: get("attester_held_data"),
+            // Intel TDX tokens carry the quote's report_data as `tdx_report_data`;
+            // `attester_held_data` only appears if held-data was submitted at mint.
+            report_data: get("attester_held_data").or_else(|| get("tdx_report_data")),
             extra: v,
         }
     }
