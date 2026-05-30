@@ -405,7 +405,7 @@ async fn verify_quote_binding(
     let report_data = claims
         .report_data
         .as_deref()
-        .ok_or_else(|| anyhow!("ITA token missing attester_held_data/report_data"))?;
+        .ok_or_else(|| anyhow!("ITA token missing tdx_report_data"))?;
     verify_report_data(report_data, pubkey)?;
     verify_measurement(&claims, config)
 }

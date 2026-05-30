@@ -49,9 +49,8 @@ impl Claims {
             attester_type: get("attester_type"),
             mrtd: get("tdx_mrtd"),
             mrsigner: get("tdx_mrsigner"),
-            // Intel TDX tokens carry the quote's report_data as `tdx_report_data`;
-            // `attester_held_data` only appears if held-data was submitted at mint.
-            report_data: get("attester_held_data").or_else(|| get("tdx_report_data")),
+            // Intel TDX tokens carry the quote's report_data as `tdx_report_data`.
+            report_data: get("tdx_report_data"),
             extra: v,
         }
     }
@@ -151,7 +150,7 @@ mod tests {
             "attester_type": "TDX",
             "tdx_mrtd": "aa",
             "tdx_mrsigner": "bb",
-            "attester_held_data": "cc",
+            "tdx_report_data": "cc",
         });
         let claims = Claims::from_value(v.clone());
         assert_eq!(claims.exp, 123);

@@ -118,27 +118,23 @@ pub fn open_record(
     Ok(None)
 }
 
-/// Reconstruct the terminal byte stream from a `replay` response. Handles both
-/// the v2 sealed `records` array (decrypted with `device_secret`) and the legacy
-/// plaintext `bytes_b64` shape (older agents), so the client works across the
-/// server rollout.
+/// Reconstruct the terminal byte stream from a `replay` response by decrypting
+/// the v2 sealed `records` with `device_secret`.
 pub fn decrypt_replay(device_secret: &StaticSecret, response: &Value) -> anyhow::Result<Vec<u8>> {
-    if let Some(records) = response.get("records").and_then(Value::as_array) {
-        let mut out = Vec::new();
-        for line in records.iter().filter_map(Value::as_str) {
-            let Some(record) = open_record(device_secret, line)? else {
-                continue; // not our recipient — skip
-            };
-            if matches!(record.kind.as_str(), "pty" | "stdout" | "stderr") {
-                out.extend_from_slice(&B64.decode(&record.data_b64)?);
-            }
+    let records = response
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("replay response has no `records`"))?;
+    let mut out = Vec::new();
+    for line in records.iter().filter_map(Value::as_str) {
+        let Some(record) = open_record(device_secret, line)? else {
+            continue; // not our recipient — skip
+        };
+        if matches!(record.kind.as_str(), "pty" | "stdout" | "stderr") {
+            out.extend_from_slice(&B64.decode(&record.data_b64)?);
         }
-        return Ok(out);
     }
-    if let Some(b64) = response.get("bytes_b64").and_then(Value::as_str) {
-        return Ok(B64.decode(b64)?); // legacy plaintext replay
-    }
-    anyhow::bail!("replay response had neither `records` nor `bytes_b64`")
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -231,12 +227,5 @@ mod tests {
         ];
         let resp = serde_json::json!({ "id": "s", "version": 2, "records": records });
         assert_eq!(decrypt_replay(&sk, &resp).unwrap(), b"foobar");
-    }
-
-    #[test]
-    fn decrypt_replay_handles_legacy_plaintext() {
-        let (sk, _pk) = device();
-        let resp = serde_json::json!({ "id": "s", "bytes_b64": B64.encode(b"legacy") });
-        assert_eq!(decrypt_replay(&sk, &resp).unwrap(), b"legacy");
     }
 }
