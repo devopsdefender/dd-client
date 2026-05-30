@@ -259,7 +259,16 @@ pub async fn exec(conn: &mut NoiseConnection, request: &ExecRequest) -> anyhow::
 
 pub fn session_id(value: &Value) -> anyhow::Result<String> {
     if let Some(error) = value.get("error") {
-        anyhow::bail!("create failed: {error}");
+        // The Noise gateway wraps upstream failures as {error, detail}; the detail
+        // carries the real cause (e.g. "unknown recipe: codex"). Surface both.
+        let msg = error
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| error.to_string());
+        match value.get("detail").and_then(Value::as_str) {
+            Some(detail) => anyhow::bail!("create failed: {msg}: {detail}"),
+            None => anyhow::bail!("create failed: {msg}"),
+        }
     }
     value
         .get("id")
